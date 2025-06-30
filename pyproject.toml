@@ -1,6 +1,6 @@
 [project]
 name = "chill-attention"
-version = "1.0.0"
+version = "1.0.1"
 description = "Fast, flexible, and chill flash attention kernel"
 authors = [
     {name = "Aleksandr Dremov", email = "dremov.me@gmail.com"}

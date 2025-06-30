@@ -4,7 +4,6 @@
 Chill Attention provides an efficient sparse flash attention operator with optimized attention masking for exact attention calculation.
 
 
-
 ## Features
 
 - ⚡ **High-Performance Kernels**
@@ -221,30 +220,30 @@ Some notable results are:
 
 `bwd SlidingWindowChillMask(16, 16)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-SlidingWindowChillMask(16, 16)-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-bwd-small-SlidingWindowChillMask(16, 16)-dim-64-heads-12-batch-64.png">
 
 `fwd ChunkwiseChillMask(16, 8)`
 
-<img src="benchmark/results/result-nv-9_0-fwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-fwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
 
 `fwd PrefixLMChillMask(128)`
 
-<img src="benchmark/results/result-nv-9_0-fwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-fwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
 
 
 However, in some cases, further optimization is still needed (especially for the backward pass on H100 hardware).
 
 `bwd CausalChillMask()`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-CausalChillMask()-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-bwd-small-CausalChillMask()-dim-64-heads-12-batch-64.png">
 
 `bwd ChunkwiseChillMask(16, 8)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-bwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
 
 `bwd PrefixLMChillMask(128)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
+<img src="https://github.com/alexdremov/chill-attention/blob/main/benchmark/results/result-nv-9_0-bwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
 
 
 ## Future Improvements
