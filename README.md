@@ -3,6 +3,7 @@
 
 Chill Attention provides an efficient sparse flash attention operator with optimized attention masking for exact attention calculation.
 
+<img src="assets/chill.png" height=180>
 
 ## Features
 
