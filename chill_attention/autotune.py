@@ -42,6 +42,8 @@ _h100_fwd_default_config = {
     (torch.float32, 16): (16, 64, 2, 1, True),
     (torch.float32, 32): (16, 64, 2, 2, False),
     (torch.float32, 64): (16, 64, 2, 2, True),
+    (torch.float32, 128): (16, 32, 2, 2, False),
+    (torch.float32, 256): (16, 32, 2, 1, False),
 }
 
 _a100_bwd_default_config = {
