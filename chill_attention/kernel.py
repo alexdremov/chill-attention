@@ -1150,8 +1150,7 @@ def _chill_attn_bwd_dkdv(
         if not is_full:
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
 
-        if not (is_full and Q_BLOCK_DIVISIBLE and K_BLOCK_DIVISIBLE):
-            pT = tl.where(mask, pT, 0.0)
+        pT = tl.where(mask, pT, 0.0)
 
         if not TENSORS_PRELOAD:
             if USE_TMA:
