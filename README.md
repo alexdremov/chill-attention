@@ -15,9 +15,10 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 
   Supports custom-defined attention masks. Examples include `FullChillMask`, `CausalChillMask`, `SlidingWindowChillMask`, `ChunkwiseChillMask`, and `PrefixLMChillMask`. **Define your own mask with just three simple methods.**
 
-- 🏎️ **Kernel Tuning**
+- 🏎️ **Kernel Tuning & Triton TMA**
 
   Optimized default configurations for different hardware (A100, H100). Autotuning is also available to optimize performance for custom masks.
+  Additionally, support for automatic Blackwell TMA use is implemented.
 
 - 🎯 **Multiple Precision Types**
 

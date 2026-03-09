@@ -16,7 +16,12 @@ from chill_attention.autotune import (
 )
 
 from .mask import ChillMask
-from .utils import _chill_attn_bwd_precompute, _get_min_max_tiles, strides
+from .utils import (
+    _chill_attn_bwd_precompute,
+    _get_min_max_tiles,
+    _triton_set_alloc,
+    strides,
+)
 
 MAX_TILE_SIZE = 128
 MIN_TILE_SIZE = 32
@@ -1201,10 +1206,6 @@ def attention_backward_adapter_op_setup_context(ctx, inputs, output):
     ctx.autotune = autotune
 
 
-def alloc_fn(size: int, alignment: int, stream: None | int):
-    return torch.empty(size, device="cuda", dtype=torch.int8)
-
-
 def register_chill_mask(mask: ChillMask):
     """
     Register a ChillMask with PyTorch's dispatcher system.
@@ -1258,13 +1259,7 @@ def register_chill_mask(mask: ChillMask):
             lens.dtype == torch.int32 and batch == len(lens) and lens.ndim == 1
         )
 
-        import triton.runtime._allocation
-
-        if isinstance(
-            triton.runtime._allocation._allocator.get(),
-            triton.runtime._allocation.NullAllocator,
-        ):
-            triton.set_allocator(alloc_fn)
+        _triton_set_alloc()
 
         O = torch.zeros_like(q, memory_format=torch.contiguous_format)
         LSE = None
@@ -1417,6 +1412,8 @@ def register_chill_mask(mask: ChillMask):
         autotune: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch, heads, T, HEAD_DIM = q.shape
+
+        _triton_set_alloc()
 
         delta = torch.empty(o.shape[:-1], dtype=torch.float32, device=o.device)
         grid = lambda args: (
@@ -1600,14 +1597,7 @@ def register_chill_mask(mask: ChillMask):
         precision = ctx.precision
         autotune = ctx.autotune
 
-        import triton.runtime._allocation
-
-        if isinstance(
-            triton.runtime._allocation._allocator.get(),
-            triton.runtime._allocation.NullAllocator,
-        ):
-            triton.set_allocator(alloc_fn)
-
+        _triton_set_alloc()
         DQ, DK, DV = attention_backward_adapter(
             q=q,
             k=k,
