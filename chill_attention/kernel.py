@@ -21,7 +21,6 @@ from .utils import _chill_attn_bwd_precompute, _get_min_max_tiles, strides
 MAX_TILE_SIZE = 128
 MIN_TILE_SIZE = 32
 
-
 logger = logging.getLogger(__name__)
 
 # fmt: off
@@ -34,10 +33,10 @@ logger = logging.getLogger(__name__)
 )
 @triton.jit
 def _chill_attn_fwd(
-    Q: tl.tensor, Kt: tl.tensor, V: tl.tensor, L: tl.tensor, #
+    Q: tl.tensor, K: tl.tensor, V: tl.tensor, L: tl.tensor, #
     LSE: tl.tensor, O: tl.tensor,  #
     stride_qb: int, stride_qh: int, stride_qt: int, stride_qk: tl.constexpr,  #
-    stride_kb: int, stride_kh: int, stride_kk: tl.constexpr, stride_kt: int,  #
+    stride_kb: int, stride_kh: int, stride_kt: int, stride_kk: tl.constexpr,  #
     stride_vb: int, stride_vh: int, stride_vt: int, stride_vk: tl.constexpr,  #
     stride_mb: int, stride_mh: int, stride_mt: tl.constexpr,  #
     stride_ob: int, stride_oh: int, stride_ot: int, stride_ok: tl.constexpr, #
@@ -49,6 +48,7 @@ def _chill_attn_fwd(
     SM_SCALE: tl.constexpr,  #
     DTYPE:  tl.constexpr,  #
     PRESCALE_QK: tl.constexpr,  #
+    USE_TMA: tl.constexpr,  #
     OUTPUT_LOGSUMEXP: tl.constexpr,  #
     TILE_Q_SIZE: tl.constexpr,  #
     TILE_K_SIZE: tl.constexpr,  #
@@ -81,34 +81,58 @@ def _chill_attn_fwd(
         return
 
     qbatch_head_offset = batch * stride_qb + head * stride_qh
-    q_tile_ptr = tl.make_block_ptr(
-        base=Q + qbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_qt, stride_qk),
-        offsets=(q_token_idx, 0),
-        block_shape=(TILE_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        q_desc = tl.make_tensor_descriptor(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            block_shape=(TILE_Q_SIZE, HEAD_DIM),
+        )
+    else:
+        q_desc = tl.make_block_ptr(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            offsets=(q_token_idx, 0),
+            block_shape=(TILE_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     kbatch_head_offset = batch * stride_kb + head * stride_kh
-    kt_tile_ptr = tl.make_block_ptr(
-        base=Kt + kbatch_head_offset,
-        shape=(HEAD_DIM, T),
-        strides=(stride_kk, stride_kt),
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, TILE_K_SIZE),
-        order=(0, 1),
-    )
+    if USE_TMA:
+        k_desc = tl.make_tensor_descriptor(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            block_shape=(TILE_K_SIZE, HEAD_DIM),
+        )
+    else:
+        k_desc = tl.make_block_ptr(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            offsets=(0, 0),
+            block_shape=(TILE_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     vbatch_head_offset = batch * stride_vb + head * stride_vh
-    v_tile_ptr = tl.make_block_ptr(
-        base=V + vbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_vt, stride_vk),
-        offsets=(0, 0),
-        block_shape=(TILE_K_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        v_desc = tl.make_tensor_descriptor(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            block_shape=(TILE_K_SIZE, HEAD_DIM),
+        )
+    else:
+        v_desc = tl.make_block_ptr(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            offsets=(0, 0),
+            block_shape=(TILE_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     m_i = tl.zeros([TILE_Q_SIZE], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([TILE_Q_SIZE], dtype=tl.float32)
@@ -129,13 +153,17 @@ def _chill_attn_fwd(
         q_tile_indices[:, None] < seq_len
     )
 
-    if Q_BLOCK_DIVISIBLE:
-        q_tile = tl.load(q_tile_ptr)
+    if USE_TMA:
+        # TMA inherently zero-pads out-of-bounds loads
+        q_tile = q_desc.load([q_token_idx, 0])
     else:
-        q_tile = tl.load(
-            q_tile_ptr,
-            boundary_check=(0,),
-        )
+        if Q_BLOCK_DIVISIBLE:
+            q_tile = tl.load(q_desc)
+        else:
+            q_tile = tl.load(
+                q_desc,
+                boundary_check=(0,),
+            )
 
     softmax_scale: tl.constexpr = tl.cast(SM_SCALE * RCP_LN2, q_tile.dtype)
 
@@ -147,27 +175,32 @@ def _chill_attn_fwd(
     ):
         kv_token_idx = kv_tile_idx * TILE_K_SIZE
 
-        if K_BLOCK_DIVISIBLE:
-            kt_tile = tl.load(
-                tl.advance(kt_tile_ptr, (0, kv_token_idx)),
-            )
+        if USE_TMA:
+            k_tile = k_desc.load([kv_token_idx, 0])
             if TENSORS_PRELOAD:
-                v_tile = tl.load(
-                    tl.advance(v_tile_ptr, (kv_token_idx, 0)),
-                )
+                v_tile = v_desc.load([kv_token_idx, 0])
         else:
-            kt_tile = tl.load(
-                tl.advance(kt_tile_ptr, (0, kv_token_idx)),
-                boundary_check=(1,),
-            )
-            if TENSORS_PRELOAD:
-                v_tile = tl.load(
-                    tl.advance(v_tile_ptr, (kv_token_idx, 0)),
+            if K_BLOCK_DIVISIBLE:
+                k_tile = tl.load(
+                    tl.advance(k_desc, (kv_token_idx, 0)),
+                )
+                if TENSORS_PRELOAD:
+                    v_tile = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                    )
+            else:
+                k_tile = tl.load(
+                    tl.advance(k_desc, (kv_token_idx, 0)),
                     boundary_check=(0,),
                 )
+                if TENSORS_PRELOAD:
+                    v_tile = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                        boundary_check=(0,),
+                    )
 
         qk = tl.dot(
-            q_tile, kt_tile, input_precision=INPUT_PRECISION, out_dtype=tl.float32
+            q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32
         )
 
         kv_indices = kv_token_idx + tl.arange(0, TILE_K_SIZE)
@@ -191,15 +224,18 @@ def _chill_attn_fwd(
         acc = acc * alpha[:, None]
 
         if not TENSORS_PRELOAD:
-            if K_BLOCK_DIVISIBLE:
-                v_tile = tl.load(
-                    tl.advance(v_tile_ptr, (kv_tile_idx * TILE_K_SIZE, 0)),
-                )
+            if USE_TMA:
+                v_tile = v_desc.load([kv_token_idx, 0])
             else:
-                v_tile = tl.load(
-                    tl.advance(v_tile_ptr, (kv_tile_idx * TILE_K_SIZE, 0)),
-                    boundary_check=(0,),
-                )
+                if K_BLOCK_DIVISIBLE:
+                    v_tile = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                    )
+                else:
+                    v_tile = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                        boundary_check=(0,),
+                    )
 
         acc = tl.dot(
             p.to(v_tile.dtype),
@@ -219,50 +255,68 @@ def _chill_attn_fwd(
     q_token_idx = q_tile_idx * TILE_Q_SIZE
 
     obatch_head_offset = batch * stride_ob + head * stride_oh
-    o_tile_ptr = tl.make_block_ptr(
-        base=O + obatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_ot, stride_ok),
-        offsets=(q_token_idx, 0),
-        block_shape=(TILE_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-    if Q_BLOCK_DIVISIBLE:
-        tl.store(
-            o_tile_ptr,
-            acc.to(o_tile_ptr.type.element_ty),
+    if USE_TMA:
+        o_desc = tl.make_tensor_descriptor(
+            base=O + obatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_ot, stride_ok),
+            block_shape=(TILE_Q_SIZE, HEAD_DIM),
         )
+        o_desc.store([q_token_idx, 0], acc.to(q_tile.dtype))
     else:
-        tl.store(
-            o_tile_ptr,
-            acc.to(o_tile_ptr.type.element_ty),
-            boundary_check=(0,),
+        o_desc = tl.make_block_ptr(
+            base=O + obatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_ot, stride_ok),
+            offsets=(q_token_idx, 0),
+            block_shape=(TILE_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
         )
+        if Q_BLOCK_DIVISIBLE:
+            tl.store(
+                o_desc,
+                acc.to(o_desc.type.element_ty),
+            )
+        else:
+            tl.store(
+                o_desc,
+                acc.to(o_desc.type.element_ty),
+                boundary_check=(0,),
+            )
 
     if OUTPUT_LOGSUMEXP and LSE is not None:
         m_i += tl.math.log2(l_i)
 
         mbatch_head_offset = batch * stride_mb + head * stride_mh
-        m_tile_ptr = tl.make_block_ptr(
-            base=LSE + mbatch_head_offset,
-            shape=(T,),
-            strides=(stride_mt,),
-            offsets=(q_token_idx,),
-            block_shape=(TILE_Q_SIZE,),
-            order=(0,),
-        )
-
-        if Q_BLOCK_DIVISIBLE:
-            tl.store(
-                m_tile_ptr,
-                m_i,
+        if USE_TMA:
+            m_desc = tl.make_tensor_descriptor(
+                base=LSE + mbatch_head_offset,
+                shape=(T,),
+                strides=(stride_mt,),
+                block_shape=(TILE_Q_SIZE,),
             )
+            m_desc.store([q_token_idx], m_i)
         else:
-            tl.store(
-                m_tile_ptr,
-                m_i,
-                boundary_check=(0,),
+            m_tile_ptr = tl.make_block_ptr(
+                base=LSE + mbatch_head_offset,
+                shape=(T,),
+                strides=(stride_mt,),
+                offsets=(q_token_idx,),
+                block_shape=(TILE_Q_SIZE,),
+                order=(0,),
             )
+
+            if Q_BLOCK_DIVISIBLE:
+                tl.store(
+                    m_tile_ptr,
+                    m_i,
+                )
+            else:
+                tl.store(
+                    m_tile_ptr,
+                    m_i,
+                    boundary_check=(0,),
+                )
 
 
 @triton.heuristics(
@@ -280,15 +334,15 @@ def _chill_attn_bwd(
     Q: tl.tensor, K: tl.tensor, V: tl.tensor, L: tl.tensor, #
     DELTA: tl.tensor, LSE: tl.tensor,
     DO: tl.tensor, DQ: tl.tensor, DK: tl.tensor, DV: tl.tensor,
-    stride_qb: int, stride_qh: int, stride_qt: int, stride_qk: int,  #
-    stride_kb: int, stride_kh: int, stride_kt: int, stride_kk: int,  #
-    stride_vb: int, stride_vh: int, stride_vt: int, stride_vk: int,  #
-    stride_deltab: int, stride_deltah: int, stride_deltat: int,  #
-    stride_mb: int, stride_mh: int, stride_mt: int,  #
-    stride_dob: int, stride_doh: int, stride_dot: int, stride_dok: int,  #
-    stride_dqb: int, stride_dqh: int, stride_dqt: int, stride_dqk: int,  #
-    stride_dkb: int, stride_dkh: int, stride_dkt: int, stride_dkk: int,  #
-    stride_dvb: int, stride_dvh: int, stride_dvt: int, stride_dvk: int,  #
+    stride_qb: int, stride_qh: int, stride_qt: int, stride_qk: tl.constexpr,  #
+    stride_kb: int, stride_kh: int, stride_kt: int, stride_kk: tl.constexpr,  #
+    stride_vb: int, stride_vh: int, stride_vt: int, stride_vk: tl.constexpr,  #
+    stride_deltab: int, stride_deltah: int, stride_deltat: tl.constexpr,  #
+    stride_mb: int, stride_mh: int, stride_mt: tl.constexpr,  #
+    stride_dob: int, stride_doh: int, stride_dot: int, stride_dok: tl.constexpr,  #
+    stride_dqb: int, stride_dqh: int, stride_dqt: int, stride_dqk: tl.constexpr,  #
+    stride_dkb: int, stride_dkh: int, stride_dkt: int, stride_dkk: tl.constexpr,  #
+    stride_dvb: int, stride_dvh: int, stride_dvt: int, stride_dvk: tl.constexpr,  #
     lens_stride: int,
     T: int,  #
     TIME_BUCKET: int,  #
@@ -309,6 +363,7 @@ def _chill_attn_bwd(
     TILE_DK_Q_SIZE: tl.constexpr, TILE_DK_K_SIZE: tl.constexpr,  #
     PIPELINING: tl.constexpr,  #
     TENSORS_PRELOAD: tl.constexpr,
+    USE_TMA: tl.constexpr,
     mask_fns,
     mask_args,
     q_lims_continious: tl.constexpr,
@@ -342,6 +397,8 @@ def _chill_attn_bwd(
             seq_len=seq_len,
             T=T,
             HEAD_DIM=HEAD_DIM,
+            DTYPE=DTYPE,
+            USE_TMA=USE_TMA,
             INPUT_PRECISION=INPUT_PRECISION,
             SM_SCALE=SM_SCALE,
             PRESCALE_QK=PRESCALE_QK,
@@ -374,6 +431,8 @@ def _chill_attn_bwd(
             seq_len=seq_len,
             T=T,
             HEAD_DIM=HEAD_DIM,
+            DTYPE=DTYPE,
+            USE_TMA=USE_TMA,
             INPUT_PRECISION=INPUT_PRECISION,
             SM_SCALE=SM_SCALE,
             PRESCALE_QK=PRESCALE_QK,
@@ -407,6 +466,7 @@ def _chill_attn_bwd_dq_inner(
     seq_len: tl.tensor,
     T: int,  #
     HEAD_DIM: tl.constexpr,  #
+    DTYPE: tl.constexpr,  #
     INPUT_PRECISION: tl.constexpr,  #
     SM_SCALE: tl.constexpr,  #
     PRESCALE_QK: tl.constexpr,  #
@@ -418,6 +478,7 @@ def _chill_attn_bwd_dq_inner(
     TILE_DQ_K_SIZE: tl.constexpr,  #
     PIPELINING: tl.constexpr,  #
     TENSORS_PRELOAD: tl.constexpr,
+    USE_TMA: tl.constexpr,
     mask_fns,
     mask_args,
     k_lims_continious: tl.constexpr,  #
@@ -426,80 +487,134 @@ def _chill_attn_bwd_dq_inner(
     q_token_idx = q_tile_idx * TILE_DQ_Q_SIZE
 
     qbatch_head_offset = batch * stride_qb + head * stride_qh
-    q_tile_ptr = tl.make_block_ptr(
-        base=Q + qbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_qt, stride_qk),
-        offsets=(q_token_idx, 0),
-        block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        q_desc = tl.make_tensor_descriptor(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+        )
+    else:
+        q_desc = tl.make_block_ptr(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            offsets=(q_token_idx, 0),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     lsebatch_head_offset = batch * stride_mb + head * stride_mh
-    lse_tile_ptr = tl.make_block_ptr(
-        base=LSE + lsebatch_head_offset,
-        shape=(T,),
-        strides=(stride_mt,),
-        offsets=(q_token_idx,),
-        block_shape=(TILE_DQ_Q_SIZE,),
-        order=(0,),
-    )
+    if USE_TMA:
+        lse_desc = tl.make_tensor_descriptor(
+            base=LSE + lsebatch_head_offset,
+            shape=(T,),
+            strides=(stride_mt,),
+            block_shape=(TILE_DQ_Q_SIZE,),
+        )
+    else:
+        lse_desc = tl.make_block_ptr(
+            base=LSE + lsebatch_head_offset,
+            shape=(T,),
+            strides=(stride_mt,),
+            offsets=(q_token_idx,),
+            block_shape=(TILE_DQ_Q_SIZE,),
+            order=(0,),
+        )
 
-    delta_tile_ptr = batch * stride_deltab + head * stride_deltah
-    delta_tile_ptr = tl.make_block_ptr(
-        base=DELTA + delta_tile_ptr,
-        shape=(T,),
-        strides=(stride_deltat,),
-        offsets=(q_token_idx,),
-        block_shape=(TILE_DQ_Q_SIZE,),
-        order=(0,),
-    )
+    delta_offset = batch * stride_deltab + head * stride_deltah
+    if USE_TMA:
+        delta_desc = tl.make_tensor_descriptor(
+            base=DELTA + delta_offset,
+            shape=(T,),
+            strides=(stride_deltat,),
+            block_shape=(TILE_DQ_Q_SIZE,),
+        )
+    else:
+        delta_desc = tl.make_block_ptr(
+            base=DELTA + delta_offset,
+            shape=(T,),
+            strides=(stride_deltat,),
+            offsets=(q_token_idx,),
+            block_shape=(TILE_DQ_Q_SIZE,),
+            order=(0,),
+        )
 
     dobatch_head_offset = batch * stride_dob + head * stride_doh
-    do_tile_ptr = tl.make_block_ptr(
-        base=DO + dobatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dot, stride_dok),
-        offsets=(q_token_idx, 0),
-        block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-
-    if DQ_Q_BLOCK_DIVISIBLE:
-        q = tl.load(q_tile_ptr)
-        m = tl.load(lse_tile_ptr)[:, None]
-        di = tl.load(delta_tile_ptr)
-        do = tl.load(do_tile_ptr)
+    if USE_TMA:
+        do_desc = tl.make_tensor_descriptor(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+        )
     else:
-        q = tl.load(q_tile_ptr, boundary_check=(0,))
-        m = tl.load(lse_tile_ptr, boundary_check=(0,))[:, None]
-        di = tl.load(delta_tile_ptr, boundary_check=(0,))
-        do = tl.load(do_tile_ptr, boundary_check=(0,))
+        do_desc = tl.make_block_ptr(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            offsets=(q_token_idx, 0),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+
+    if USE_TMA:
+        q = q_desc.load([q_token_idx, 0])
+        m = lse_desc.load([q_token_idx])[:, None]
+        di = delta_desc.load([q_token_idx])
+        do = do_desc.load([q_token_idx, 0])
+    else:
+        if DQ_Q_BLOCK_DIVISIBLE:
+            q = tl.load(q_desc)
+            m = tl.load(lse_desc)[:, None]
+            di = tl.load(delta_desc)
+            do = tl.load(do_desc)
+        else:
+            q = tl.load(q_desc, boundary_check=(0,))
+            m = tl.load(lse_desc, boundary_check=(0,))[:, None]
+            di = tl.load(delta_desc, boundary_check=(0,))
+            do = tl.load(do_desc, boundary_check=(0,))
 
     kbatch_head_offset = batch * stride_kb + head * stride_kh
-    kt_tile_ptr = tl.make_block_ptr(
-        base=K + kbatch_head_offset,
-        shape=(HEAD_DIM, T),
-        strides=(stride_kk, stride_kt),
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, TILE_DQ_K_SIZE),
-        order=(0, 1),
-    )
+    if USE_TMA:
+        k_desc = tl.make_tensor_descriptor(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
+        )
+    else:
+        k_desc = tl.make_block_ptr(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
+            offsets=(0, 0),
+            order=(0, 1),
+        )
 
     vbatch_head_offset = batch * stride_vb + head * stride_vh
-    vt_tile_ptr = tl.make_block_ptr(
-        base=V + vbatch_head_offset,
-        shape=(HEAD_DIM, T),
-        strides=(stride_vk, stride_vt),
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, TILE_DQ_K_SIZE),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        v_desc = tl.make_tensor_descriptor(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
+        )
+    else:
+        v_desc = tl.make_block_ptr(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
+            offsets=(0, 0),
+            order=(0, 1),
+        )
 
     dq = tl.zeros([TILE_DQ_Q_SIZE, HEAD_DIM], dtype=tl.float32)
     dq = _chill_attn_bwd_dq(
         dq, q, m, di, do,
-        kt_tile_ptr, vt_tile_ptr,
+        k_desc, v_desc,
         seq_len=seq_len,
         q_token_idx=q_token_idx,
         TILE_Q_SIZE=TILE_DQ_Q_SIZE,
@@ -510,6 +625,7 @@ def _chill_attn_bwd_dq_inner(
         HAS_FULL_BLOCKS=HAS_FULL_BLOCKS,
         RCP_LN2=RCP_LN2,
         SM_SCALE=SM_SCALE,
+        USE_TMA=USE_TMA,
         PRESCALE_QK=PRESCALE_QK,
         TENSORS_PRELOAD=TENSORS_PRELOAD,
         mask_fns=mask_fns,
@@ -518,18 +634,28 @@ def _chill_attn_bwd_dq_inner(
     )
 
     dqbatch_head_offset = batch * stride_dqb + head * stride_dqh
-    dq_tile_ptr = tl.make_block_ptr(
-        base=DQ + dqbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dqt, stride_dqk),
-        offsets=(q_token_idx, 0),
-        block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-    if DQ_Q_BLOCK_DIVISIBLE:
-        tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty))
+    if USE_TMA:
+        dq_desc = tl.make_tensor_descriptor(
+            base=DQ + dqbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dqt, stride_dqk),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+        )
+
+        dq_desc.store([q_token_idx, 0], dq.to(q.dtype))
     else:
-        tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty), boundary_check=(0,))
+        dq_tile_ptr = tl.make_block_ptr(
+            base=DQ + dqbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dqt, stride_dqk),
+            offsets=(q_token_idx, 0),
+            block_shape=(TILE_DQ_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+        if DQ_Q_BLOCK_DIVISIBLE:
+            tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty))
+        else:
+            tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty), boundary_check=(0,))
 
 
 @triton.jit
@@ -552,6 +678,8 @@ def _chill_attn_bwd_dkdv_inner(
     seq_len: tl.tensor,
     T: int,  #
     HEAD_DIM: tl.constexpr,  #
+    DTYPE: tl.constexpr,  #
+    USE_TMA: tl.constexpr,  #
     INPUT_PRECISION: tl.constexpr,  #
     SM_SCALE: tl.constexpr,  #
     PRESCALE_QK: tl.constexpr,  #
@@ -571,88 +699,141 @@ def _chill_attn_bwd_dkdv_inner(
     kv_token_idx = kv_tile_idx * TILE_DK_K_SIZE
 
     qbatch_head_offset = batch * stride_qb + head * stride_qh
-    qt_tile_ptr = tl.make_block_ptr(
-        base=Q + qbatch_head_offset,
-        shape=(HEAD_DIM, T),
-        strides=(stride_qk, stride_qt),
-        offsets=(0, 0),
-        block_shape=(HEAD_DIM, TILE_DK_Q_SIZE),
-        order=(0, 1),
-    )
+    if USE_TMA:
+        q_desc = tl.make_tensor_descriptor(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            block_shape=(TILE_DK_Q_SIZE, HEAD_DIM),
+        )
+    else:
+        q_desc = tl.make_block_ptr(
+            base=Q + qbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_qt, stride_qk),
+            offsets=(0, 0),
+            block_shape=(TILE_DK_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     kbatch_head_offset = batch * stride_kb + head * stride_kh
-    k_tile_ptr = tl.make_block_ptr(
-        base=K + kbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_kt, stride_kk),
-        offsets=(kv_token_idx, 0),
-        block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        k_desc = tl.make_tensor_descriptor(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+        )
+    else:
+        k_desc = tl.make_block_ptr(
+            base=K + kbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_kt, stride_kk),
+            offsets=(kv_token_idx, 0),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     vbatch_head_offset = batch * stride_vb + head * stride_vh
-    v_tile_ptr = tl.make_block_ptr(
-        base=V + vbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_vt, stride_vk),
-        offsets=(kv_token_idx, 0),
-        block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        v_desc = tl.make_tensor_descriptor(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+        )
+    else:
+        v_desc = tl.make_block_ptr(
+            base=V + vbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_vt, stride_vk),
+            offsets=(kv_token_idx, 0),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     dobatch_head_offset = batch * stride_dob + head * stride_doh
-    do_tile_ptr = tl.make_block_ptr(
-        base=DO + dobatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dot, stride_dok),
-        offsets=(0, 0),
-        block_shape=(TILE_DK_Q_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
+    if USE_TMA:
+        do_desc = tl.make_tensor_descriptor(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            block_shape=(TILE_DK_Q_SIZE, HEAD_DIM),
+        )
+    else:
+        do_desc = tl.make_block_ptr(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            offsets=(0, 0),
+            block_shape=(TILE_DK_Q_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
 
     lsebatch_head_offset = batch * stride_mb + head * stride_mh
-    lse_tile_ptr = tl.make_block_ptr(
-        base=LSE + lsebatch_head_offset,
-        shape=(T,),
-        strides=(stride_mt,),
-        offsets=(0,),
-        block_shape=(TILE_DK_Q_SIZE,),
-        order=(0,),
-    )
+    if USE_TMA:
+        lse_desc = tl.make_tensor_descriptor(
+            base=LSE + lsebatch_head_offset,
+            shape=(T,),
+            strides=(stride_mt,),
+            block_shape=(TILE_DK_Q_SIZE,),
+        )
+    else:
+        lse_desc = tl.make_block_ptr(
+            base=LSE + lsebatch_head_offset,
+            shape=(T,),
+            strides=(stride_mt,),
+            offsets=(0,),
+            block_shape=(TILE_DK_Q_SIZE,),
+            order=(0,),
+        )
+
 
     deltabatch_head_offset = batch * stride_deltab + head * stride_deltah
-    delta_tile_ptr = tl.make_block_ptr(
-        base=DELTA + deltabatch_head_offset,
-        shape=(T,),
-        strides=(stride_deltat,),
-        offsets=(0,),
-        block_shape=(TILE_DK_Q_SIZE,),
-        order=(0,),
-    )
+    if USE_TMA:
+        delta_desc = tl.make_tensor_descriptor(
+            base=DELTA + deltabatch_head_offset,
+            shape=(T,),
+            strides=(stride_deltat,),
+            block_shape=(TILE_DK_Q_SIZE,),
+        )
+    else:
+        delta_desc = tl.make_block_ptr(
+            base=DELTA + deltabatch_head_offset,
+            shape=(T,),
+            strides=(stride_deltat,),
+            offsets=(0,),
+            block_shape=(TILE_DK_Q_SIZE,),
+            order=(0,),
+        )
 
     dv = tl.zeros([TILE_DK_K_SIZE, HEAD_DIM], dtype=tl.float32)
     dk = tl.zeros([TILE_DK_K_SIZE, HEAD_DIM], dtype=tl.float32)
 
-    if DK_K_BLOCK_DIVISIBLE:
-        k = tl.load(
-                k_tile_ptr,
-            )
-        v = tl.load(
-                v_tile_ptr,
-            )
+    if USE_TMA:
+        k = k_desc.load([kv_token_idx, 0])
+        v = v_desc.load([kv_token_idx, 0])
     else:
-        k = tl.load(
-                k_tile_ptr,
-                boundary_check=(0,),
-            )
-        v = tl.load(
-                v_tile_ptr,
-                boundary_check=(0,),
-            )
+        if DK_K_BLOCK_DIVISIBLE:
+            k = tl.load(
+                    k_desc,
+                )
+            v = tl.load(
+                    v_desc,
+                )
+        else:
+            k = tl.load(
+                    k_desc,
+                    boundary_check=(0,),
+                )
+            v = tl.load(
+                    v_desc,
+                    boundary_check=(0,),
+                )
 
     dk, dv = _chill_attn_bwd_dkdv(
         dk, dv,
-        qt_tile_ptr, do_tile_ptr, lse_tile_ptr, delta_tile_ptr,
+        q_desc, do_desc, lse_desc, delta_desc,
         k, v,
         seq_len=seq_len,
         kv_token_idx=kv_token_idx,
@@ -666,45 +847,65 @@ def _chill_attn_bwd_dkdv_inner(
         SM_SCALE=SM_SCALE,
         PRESCALE_QK=PRESCALE_QK,
         TENSORS_PRELOAD=TENSORS_PRELOAD,
+        USE_TMA=USE_TMA,
         mask_fns=mask_fns,
         mask_args=mask_args,
         q_lims_continious=q_lims_continious,
     )
 
     dkbatch_head_offset = batch * stride_dkb + head * stride_dkh
-    dk_tile_ptr = tl.make_block_ptr(
-        base=DK + dkbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dkt, stride_dkk),
-        offsets=(kv_token_idx, 0),
-        block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-    if DK_K_BLOCK_DIVISIBLE:
-        tl.store(dk_tile_ptr, dk.to(dk_tile_ptr.type.element_ty))
+    if USE_TMA:
+        dk_desc = tl.make_tensor_descriptor(
+            base=DK + dkbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dkt, stride_dkk),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+        )
+        dk_desc.store([kv_token_idx, 0], dk.to(k.dtype))
     else:
-        tl.store(dk_tile_ptr, dk.to(dk_tile_ptr.type.element_ty), boundary_check=(0,))
+        dk_desc = tl.make_block_ptr(
+            base=DK + dkbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dkt, stride_dkk),
+            offsets=(kv_token_idx, 0),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+        if DK_K_BLOCK_DIVISIBLE:
+            tl.store(dk_desc, dk.to(dk_desc.type.element_ty))
+        else:
+            tl.store(dk_desc, dk.to(dk_desc.type.element_ty), boundary_check=(0,))
+
 
     dvbatch_head_offset = batch * stride_dvb + head * stride_dvh
-    dv_tile_ptr = tl.make_block_ptr(
-        base=DV + dvbatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dvt, stride_dvk),
-        offsets=(kv_token_idx, 0),
-        block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-    if DK_K_BLOCK_DIVISIBLE:
-        tl.store(dv_tile_ptr, dv.to(dv_tile_ptr.type.element_ty))
+    if USE_TMA:
+        dv_desc = tl.make_tensor_descriptor(
+            base=DV + dvbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dvt, stride_dvk),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+        )
+        dv_desc.store([kv_token_idx, 0], dv.to(v.dtype))
     else:
-        tl.store(dv_tile_ptr, dv.to(dv_tile_ptr.type.element_ty), boundary_check=(0,))
+        dv_desc = tl.make_block_ptr(
+            base=DV + dvbatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dvt, stride_dvk),
+            offsets=(kv_token_idx, 0),
+            block_shape=(TILE_DK_K_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+        if DK_K_BLOCK_DIVISIBLE:
+            tl.store(dv_desc, dv.to(dv_desc.type.element_ty))
+        else:
+            tl.store(dv_desc, dv.to(dv_desc.type.element_ty), boundary_check=(0,))
 
 
 @triton.jit
 def _chill_attn_bwd_dq(
     dq: tl.tensor, q: tl.tensor, m: tl.tensor,
     di: tl.tensor, do: tl.tensor,
-    kt_tile_ptr: tl.tensor, vt_tile_ptr: tl.tensor,
+    k_desc: tl.tensor, v_desc: tl.tensor,
     seq_len: tl.tensor,
     q_token_idx: int,
     TILE_Q_SIZE: tl.constexpr,
@@ -717,6 +918,7 @@ def _chill_attn_bwd_dq(
     SM_SCALE: tl.constexpr,
     PRESCALE_QK: tl.constexpr,
     TENSORS_PRELOAD: tl.constexpr,
+    USE_TMA: tl.constexpr,
     mask_fns,
     mask_args,
     k_lims_continious: tl.constexpr,
@@ -748,24 +950,30 @@ def _chill_attn_bwd_dq(
         kv_start_tile_idx, kv_end_tile_idx, num_stages=PIPELINING
     ):
         kv_token_idx = kv_tile_idx * TILE_K_SIZE
-        if K_BLOCK_DIVISIBLE:
-            kT = tl.load(
-                tl.advance(kt_tile_ptr, (0, kv_token_idx)),
-            )
+
+        if USE_TMA:
+            kT = k_desc.load([0, kv_token_idx]).trans()
             if TENSORS_PRELOAD:
-                vT = tl.load(
-                    tl.advance(vt_tile_ptr, (0, kv_token_idx)),
-                )
+                vT = v_desc.load([0, kv_token_idx]).trans()
         else:
-            kT = tl.load(
-                tl.advance(kt_tile_ptr, (0, kv_token_idx)),
-                boundary_check=(1,),
-            )
-            if TENSORS_PRELOAD:
-                vT = tl.load(
-                    tl.advance(vt_tile_ptr, (0, kv_token_idx,)),
-                    boundary_check=(1,),
-                )
+            if K_BLOCK_DIVISIBLE:
+                kT = tl.load(
+                    tl.advance(k_desc, (kv_token_idx, 0)),
+                ).trans()
+                if TENSORS_PRELOAD:
+                    vT = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                    ).trans()
+            else:
+                kT = tl.load(
+                    tl.advance(k_desc, (kv_token_idx, 0)),
+                    boundary_check=(0,),
+                ).trans()
+                if TENSORS_PRELOAD:
+                    vT = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                        boundary_check=(0,),
+                    ).trans()
 
         qk = tl.dot(q, kT, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not PRESCALE_QK:
@@ -780,15 +988,18 @@ def _chill_attn_bwd_dq(
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
 
         if not TENSORS_PRELOAD:
-            if K_BLOCK_DIVISIBLE:
-                vT = tl.load(
-                    tl.advance(vt_tile_ptr, (0, kv_token_idx)),
-                )
+            if USE_TMA:
+                vT = v_desc.load([kv_token_idx, 0]).trans()
             else:
-                vT = tl.load(
-                    tl.advance(vt_tile_ptr, (0, kv_token_idx,)),
-                    boundary_check=(1,),
-                )
+                if K_BLOCK_DIVISIBLE:
+                    vT = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                    ).trans()
+                else:
+                    vT = tl.load(
+                        tl.advance(v_desc, (kv_token_idx, 0)),
+                        boundary_check=(0,),
+                    ).trans()
 
         p = tl.where(mask, p, 0.0)
         dp = tl.dot(do.to(vT.dtype), vT, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
@@ -802,8 +1013,8 @@ def _chill_attn_bwd_dq(
 @triton.jit
 def _chill_attn_bwd_dkdv(
     dk: tl.tensor, dv: tl.tensor,
-    qt_tile_ptr: tl.tensor, do_tile_ptr: tl.tensor,
-    lse_tile_ptr: tl.tensor, delta_tile_ptr: tl.tensor,
+    q_desc: tl.tensor, do_desc: tl.tensor,
+    lse_desc: tl.tensor, delta_desc: tl.tensor,
     k: tl.tensor, v: tl.tensor,
     seq_len: tl.tensor,
     kv_token_idx: int,
@@ -817,6 +1028,7 @@ def _chill_attn_bwd_dkdv(
     SM_SCALE: tl.constexpr,
     PRESCALE_QK: tl.constexpr,
     TENSORS_PRELOAD: tl.constexpr,
+    USE_TMA: tl.constexpr,
     mask_fns,
     mask_args,
     q_lims_continious: tl.constexpr,
@@ -851,53 +1063,64 @@ def _chill_attn_bwd_dkdv(
         # NOTE: triton will not reorder loads
         # if there are problems with shared memory, do and Di loads can be moved just before usage
         # (via constexpr flag)
-        if Q_BLOCK_DIVISIBLE:
-            qT = tl.load(
-                tl.advance(qt_tile_ptr, (0, q_token_idx)),
-            )
+        if USE_TMA:
+            q = q_desc.load([q_token_idx, 0])
             if TENSORS_PRELOAD:
-                m = tl.load(
-                    tl.advance(lse_tile_ptr, (q_token_idx,)),
-                )
-                do = tl.load(
-                    tl.advance(do_tile_ptr, (q_token_idx, 0)),
-                )
-                Di = tl.load(
-                    tl.advance(delta_tile_ptr, (q_token_idx,)),
-                )
+                m = lse_desc.load([q_token_idx])
+                do = do_desc.load([q_token_idx, 0])
+                Di = delta_desc.load([q_token_idx])
         else:
-            qT = tl.load(
-                tl.advance(qt_tile_ptr, (0, q_token_idx)),
-                boundary_check=(1,),
-            )
-            if TENSORS_PRELOAD:
-                m = tl.load(
-                    tl.advance(lse_tile_ptr, (q_token_idx,)),
+            if Q_BLOCK_DIVISIBLE:
+                q = tl.load(
+                    tl.advance(q_desc, (q_token_idx, 0)),
+                )
+                if TENSORS_PRELOAD:
+                    m = tl.load(
+                        tl.advance(lse_desc, (q_token_idx,)),
+                    )
+                    do = tl.load(
+                        tl.advance(do_desc, (q_token_idx, 0)),
+                    )
+                    Di = tl.load(
+                        tl.advance(delta_desc, (q_token_idx,)),
+                    )
+            else:
+                q = tl.load(
+                    tl.advance(q_desc, (q_token_idx, 0)),
                     boundary_check=(0,),
                 )
-                do = tl.load(
-                    tl.advance(do_tile_ptr, (q_token_idx, 0)),
-                    boundary_check=(0,),
-                )
-                Di = tl.load(
-                    tl.advance(delta_tile_ptr, (q_token_idx,)),
-                    boundary_check=(0,),
-                )
+                if TENSORS_PRELOAD:
+                    m = tl.load(
+                        tl.advance(lse_desc, (q_token_idx,)),
+                        boundary_check=(0,),
+                    )
+                    do = tl.load(
+                        tl.advance(do_desc, (q_token_idx, 0)),
+                        boundary_check=(0,),
+                    )
+                    Di = tl.load(
+                        tl.advance(delta_desc, (q_token_idx,)),
+                        boundary_check=(0,),
+                    )
 
+        qT = q.trans()
         qkT = tl.dot(k, qT, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not PRESCALE_QK:
             qkT *= RCP_LN2 * SM_SCALE
 
         if not TENSORS_PRELOAD:
-            if Q_BLOCK_DIVISIBLE:
-                m = tl.load(
-                    tl.advance(lse_tile_ptr, (q_token_idx,)),
-                )
+            if USE_TMA:
+                m = lse_desc.load([q_token_idx])
             else:
-                m = tl.load(
-                    tl.advance(lse_tile_ptr, (q_token_idx,)),
-                    boundary_check=(0,),
-                )
+                if Q_BLOCK_DIVISIBLE:
+                    m = tl.load(
+                        tl.advance(lse_desc, (q_token_idx,)),
+                    )
+                else:
+                    m = tl.load(
+                        tl.advance(lse_desc, (q_token_idx,)),
+                        boundary_check=(0,),
+                    )
 
         tl.static_assert(m.dtype == tl.float32)
         pT = tl.math.exp2(qkT - m[None, :])
@@ -911,29 +1134,35 @@ def _chill_attn_bwd_dkdv(
         pT = tl.where(mask, pT, 0.0)
 
         if not TENSORS_PRELOAD:
-            if Q_BLOCK_DIVISIBLE:
-                do = tl.load(
-                    tl.advance(do_tile_ptr, (q_token_idx, 0)),
-                )
+            if USE_TMA:
+                do = do_desc.load([q_token_idx, 0])
             else:
-                do = tl.load(
-                    tl.advance(do_tile_ptr, (q_token_idx, 0)),
-                    boundary_check=(0,),
-                )
+                if Q_BLOCK_DIVISIBLE:
+                    do = tl.load(
+                        tl.advance(do_desc, (q_token_idx, 0)),
+                    )
+                else:
+                    do = tl.load(
+                        tl.advance(do_desc, (q_token_idx, 0)),
+                        boundary_check=(0,),
+                    )
 
         dv = tl.dot(pT, do.to(pT.dtype), dv, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
 
         dpT = tl.dot(v.to(do.dtype), tl.trans(do), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not TENSORS_PRELOAD:
-            if Q_BLOCK_DIVISIBLE:
-                Di = tl.load(
-                    tl.advance(delta_tile_ptr, (q_token_idx,)),
-                )
+            if USE_TMA:
+                Di = delta_desc.load([q_token_idx])
             else:
-                Di = tl.load(
-                    tl.advance(delta_tile_ptr, (q_token_idx,)),
-                    boundary_check=(0,),
-                )
+                if Q_BLOCK_DIVISIBLE:
+                    Di = tl.load(
+                        tl.advance(delta_desc, (q_token_idx,)),
+                    )
+                else:
+                    Di = tl.load(
+                        tl.advance(delta_desc, (q_token_idx,)),
+                        boundary_check=(0,),
+                    )
 
         tl.static_assert(Di.dtype == tl.float32)
         # Compute dP and dS.
@@ -971,6 +1200,10 @@ def attention_backward_adapter_op_setup_context(ctx, inputs, output):
     ctx.prescale_qk = prescale_qk
     ctx.precision = precision
     ctx.autotune = autotune
+
+
+def alloc_fn(size: int, alignment: int, stream: None | int):
+    return torch.empty(size, device="cuda", dtype=torch.int8)
 
 
 def register_chill_mask(mask: ChillMask):
@@ -1026,10 +1259,28 @@ def register_chill_mask(mask: ChillMask):
             lens.dtype == torch.int32 and batch == len(lens) and lens.ndim == 1
         )
 
+        import triton.runtime._allocation
+
+        if isinstance(
+            triton.runtime._allocation._allocator.get(),
+            triton.runtime._allocation.NullAllocator,
+        ):
+            triton.set_allocator(alloc_fn)
+
         O = torch.zeros_like(q, memory_format=torch.contiguous_format)
         LSE = None
         if return_lse:
             LSE = torch.zeros(q.shape[:3], dtype=torch.float32, device=q.device)
+
+        use_tma = (
+            q.stride(-1) == 1  # q is contiguous
+            and k.stride(-1) == 1  # k is contiguous
+            and v.stride(-1) == 1  # v is contiguous
+            and O.stride(-1) == 1  # O is contiguous
+            and (LSE is None or LSE.stride(-1) == 1)  # LSE is contiguous
+            and HEAD_DIM % 16 == 0
+            and batch % 16 == 0
+        )
 
         grid = lambda args: (
             batch,
@@ -1037,17 +1288,15 @@ def register_chill_mask(mask: ChillMask):
             triton.cdiv(T, args["TILE_Q_SIZE"]),
         )
 
-        kt = k.transpose(-1, -2)  # just stride tricks, same data
-
         args = [
             q,
-            kt,
+            k,
             v,
             lens,
             LSE,
             O,
             *strides(q, 4),
-            *strides(kt, 4),
+            *strides(k, 4),
             *strides(v, 4),
             *(strides(LSE, 3) if LSE is not None else [0] * 3),
             *strides(O, 4),
@@ -1065,6 +1314,7 @@ def register_chill_mask(mask: ChillMask):
             mask_fns=tuple(mask_fns),
             mask_args=tuple(mask_args),
             k_lims_continious=k_lims_continious,
+            USE_TMA=use_tma,
         )
 
         kernel = triton.heuristics(
@@ -1177,11 +1427,23 @@ def register_chill_mask(mask: ChillMask):
             TIME_BUCKET=triton.next_power_of_2(T),
         )
 
-        # assert do.isfinite().all()
-
         DQ = torch.zeros_like(q, memory_format=torch.contiguous_format)
         DK = torch.zeros_like(k, memory_format=torch.contiguous_format)
         DV = torch.zeros_like(v, memory_format=torch.contiguous_format)
+
+        use_tma = (
+            q.stride(-1) == 1  # q is contiguous
+            and k.stride(-1) == 1  # k is contiguous
+            and v.stride(-1) == 1  # v is contiguous
+            and o.stride(-1) == 1  # o is contiguous
+            and do.stride(-1) == 1  # do is contiguous
+            and (lens is None or lens.stride(-1) == 1)  # lens is contiguous
+            and delta.stride(-1) == 1  # delta is contiguous
+            and lse.stride(-1) == 1  # lse is contiguous
+            and HEAD_DIM % 16 == 0
+            and T % 16 == 0
+            and batch % 16 == 0
+        )
 
         grid = lambda args: (
             batch,
@@ -1224,6 +1486,7 @@ def register_chill_mask(mask: ChillMask):
             mask_args=tuple(mask_args),
             k_lims_continious=k_lims_continious,
             q_lims_continious=q_lims_continious,
+            USE_TMA=use_tma,
         )
 
         kernel = triton.heuristics(
@@ -1311,6 +1574,14 @@ def register_chill_mask(mask: ChillMask):
         prescale_qk = ctx.prescale_qk
         precision = ctx.precision
         autotune = ctx.autotune
+
+        import triton.runtime._allocation
+
+        if isinstance(
+            triton.runtime._allocation._allocator.get(),
+            triton.runtime._allocation.NullAllocator,
+        ):
+            triton.set_allocator(alloc_fn)
 
         DQ, DK, DV = attention_backward_adapter(
             q=q,
@@ -1453,6 +1724,8 @@ def chill_attention(
         >>> mask = CausalChillMask()
         >>> output = chill_attention(q, k, v, lens=None, mask=mask)
     """
+    import triton.runtime._allocation
+
     # Compile and register the mask if not already done
     register_chill_mask(mask)
     if not torch.compiler.is_compiling():

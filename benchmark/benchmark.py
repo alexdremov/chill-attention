@@ -23,7 +23,6 @@ from chill_attention import (
 )
 
 masks_to_bench = [
-    SlidingWindowChillMask(10, 20),
     SlidingWindowChillMask(16, 16),
     CausalChillMask(),
     ChunkwiseChillMask(16, 8),

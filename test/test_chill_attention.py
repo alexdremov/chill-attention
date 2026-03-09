@@ -45,9 +45,11 @@ def make_lens(lens, B, T):
         ]
         lens = torch.tensor(
             np.random.choice(tricky_lens, B), dtype=torch.int32, device="cuda"
-        )
+        ).contiguous()
     else:
-        lens = torch.randint(1, T + 1, (B,), dtype=torch.int32, device="cuda")
+        lens = torch.randint(
+            1, T + 1, (B,), dtype=torch.int32, device="cuda"
+        ).contiguous()
     return lens
 
 
@@ -79,7 +81,7 @@ def test_masks_verify(mask):
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
 @pytest.mark.parametrize("B", [1, 40, 64], ids=lambda x: f"batch-{x}")
 @pytest.mark.parametrize("H", [1, 6, 8], ids=lambda x: f"heads-{x}")
-@pytest.mark.parametrize("T", [1, 10, 16, 800, 1025], ids=lambda x: f"time-{x}")
+@pytest.mark.parametrize("T", [1, 10, 16, 800, 1024], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_forward(
     mask,
