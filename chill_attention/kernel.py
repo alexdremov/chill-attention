@@ -1016,8 +1016,7 @@ def _chill_attn_bwd_dq(
                         boundary_check=(0,),
                     ).trans()
 
-        if not (is_full and K_BLOCK_DIVISIBLE):
-            p = tl.where(mask, p, 0.0)
+        p = tl.where(mask, p, 0.0)
         dp = tl.dot(do.to(vT.dtype), vT, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         ds = p * (dp - di[:, None])
         dq = tl.dot(ds.to(kT.dtype), tl.trans(kT), dq, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
