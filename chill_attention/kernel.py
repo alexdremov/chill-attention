@@ -224,8 +224,7 @@ def _chill_attn_fwd(
         if not PRESCALE_QK:
             qk = qk * softmax_scale
 
-        if not (is_full and Q_BLOCK_DIVISIBLE and K_BLOCK_DIVISIBLE):
-            qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
+        qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
 
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
