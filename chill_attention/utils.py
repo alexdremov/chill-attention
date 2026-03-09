@@ -1,4 +1,3 @@
-import math
 
 import torch
 import triton
@@ -210,3 +209,17 @@ def _get_min_max_tiles(
     start_tile = start // TILE_SIZE_OUT
     end_tile = tl.cdiv(end + 1, TILE_SIZE_OUT)
     return start_tile, end_tile
+
+
+def alloc_fn(size: int, alignment: int, stream: None | int):
+    return torch.empty(size, device="cuda", dtype=torch.int8)
+
+
+def _triton_set_alloc():
+    import triton.runtime._allocation
+
+    if isinstance(
+        triton.runtime._allocation._allocator.get(),
+        triton.runtime._allocation.NullAllocator,
+    ):
+        triton.set_allocator(alloc_fn)

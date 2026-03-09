@@ -122,7 +122,8 @@ def _get_forward_autotune_configs(head_dim, dtype):
     additional_q = [TILE_Q_SIZE * 2, TILE_Q_SIZE // 2]
     additional_k = [TILE_K_SIZE * 2, TILE_K_SIZE // 2]
 
-    valid_size = lambda x: x >= 16 and x < 256
+    def valid_size(x):
+        return x >= 16 and x < 256
     additional_q = [TILE_Q_SIZE] + list(filter(valid_size, additional_q))
     additional_k = [TILE_K_SIZE] + list(filter(valid_size, additional_k))
 
@@ -131,7 +132,8 @@ def _get_forward_autotune_configs(head_dim, dtype):
         additional_pipe.append(PIPELINING + 1)
 
     warps = [N_WARPS // 2, N_WARPS * 2]
-    valid_size = lambda x: x >= 1 and x <= 4
+    def valid_size(x):
+        return x >= 1 and x <= 4
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
@@ -160,13 +162,15 @@ def _get_backward_autotune_configs(head_dim, dtype):
     additional_q = [TILE_DQ_Q_SIZE * 2, TILE_DQ_Q_SIZE // 2, TILE_DQ_Q_SIZE // 4]
     additional_k = [TILE_DQ_K_SIZE * 2, TILE_DQ_K_SIZE // 2, TILE_DQ_K_SIZE // 4]
 
-    valid_size = lambda x: x >= 16 and x <= 64
+    def valid_size(x):
+        return x >= 16 and x <= 64
     additional_q = [TILE_DQ_Q_SIZE] + list(filter(valid_size, additional_q))
     additional_k = [TILE_DQ_K_SIZE] + list(filter(valid_size, additional_k))
 
     additional_pipe = [PIPELINING]
     warps = [N_WARPS // 2]
-    valid_size = lambda x: x >= 1 and x <= 8
+    def valid_size(x):
+        return x >= 1 and x <= 8
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
