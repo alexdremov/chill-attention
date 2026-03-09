@@ -1144,14 +1144,14 @@ def _chill_attn_bwd_dkdv(
         mask = kv_lens_mask & (
             q_tile_indices[None, :] < seq_len
         )
-        
+
         is_full = False
         if HAS_FULL_BLOCKS:
             is_full = is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args)
-            
+
         if not is_full:
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
-        
+
         if not (is_full and Q_BLOCK_DIVISIBLE and K_BLOCK_DIVISIBLE):
             pT = tl.where(mask, pT, 0.0)
 
@@ -1713,7 +1713,7 @@ def chill_attention(
     lens: torch.Tensor | None = None,
     sm_scale: float | None = None,
     return_lse=False,
-    prescale_qk=True,
+    prescale_qk=False,
     precision="ieee",
     autotune=False,
 ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
