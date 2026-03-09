@@ -951,9 +951,9 @@ def _chill_attn_bwd_dq(
         kv_token_idx = kv_tile_idx * TILE_K_SIZE
 
         if USE_TMA:
-            kT = k_desc.load([0, kv_token_idx]).trans()
+            kT = k_desc.load([kv_token_idx, 0]).trans()
             if TENSORS_PRELOAD:
-                vT = v_desc.load([0, kv_token_idx]).trans()
+                vT = v_desc.load([kv_token_idx, 0]).trans()
         else:
             if K_BLOCK_DIVISIBLE:
                 kT = tl.load(
