@@ -1711,7 +1711,7 @@ def chill_attention(
     lens: torch.Tensor | None = None,
     sm_scale: float | None = None,
     return_lse=False,
-    prescale_qk=False,
+    prescale_qk=True,
     precision="ieee",
     autotune=False,
 ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
