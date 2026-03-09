@@ -1278,8 +1278,19 @@ def register_chill_mask(mask: ChillMask):
             and v.stride(-1) == 1  # v is contiguous
             and O.stride(-1) == 1  # O is contiguous
             and (LSE is None or LSE.stride(-1) == 1)  # LSE is contiguous
-            and HEAD_DIM % 16 == 0
-            and batch % 16 == 0
+            and q.stride(0) % 16 == 0  # stride_qb is multiple of 16
+            and k.stride(0) % 16 == 0  # stride_kb is multiple of 16
+            and v.stride(0) % 16 == 0  # stride_vb is multiple of 16
+            and O.stride(0) % 16 == 0  # stride_0b is multiple of 16
+            and q.stride(1) % 16 == 0  # stride_qh is multiple of 16
+            and k.stride(1) % 16 == 0  # stride_kh is multiple of 16
+            and v.stride(1) % 16 == 0  # stride_vh is multiple of 16
+            and O.stride(1) % 16 == 0  # stride_ob is multiple of 16
+            and (
+                LSE is None
+                or LSE.stride(0) % 16 == 0  # stride_mb is multiple of 16
+                and LSE.stride(1) % 16 == 0  # stride_mh is multiple of 16
+            )
         )
 
         grid = lambda args: (
@@ -1440,9 +1451,24 @@ def register_chill_mask(mask: ChillMask):
             and (lens is None or lens.stride(-1) == 1)  # lens is contiguous
             and delta.stride(-1) == 1  # delta is contiguous
             and lse.stride(-1) == 1  # lse is contiguous
-            and HEAD_DIM % 16 == 0
-            and T % 16 == 0
-            and batch % 16 == 0
+            and q.stride(0) % 16 == 0  # stride_qb is multiple of 16
+            and k.stride(0) % 16 == 0  # stride_kb is multiple of 16
+            and v.stride(0) % 16 == 0  # stride_vb is multiple of 16
+            and lse.stride(0) % 16 == 0  # stride_mb is multiple of 16
+            and delta.stride(0) % 16 == 0  # stride_deltab is multiple of 16
+            and do.stride(0) % 16 == 0  # stride_dob is multiple of 16
+            and DQ.stride(0) % 16 == 0  # stride_dqb is multiple of 16
+            and DK.stride(0) % 16 == 0  # stride_dkb is multiple of 16
+            and DV.stride(0) % 16 == 0  # stride_dvb is multiple of 16
+            and q.stride(1) % 16 == 0  # stride_qh is multiple of 16
+            and k.stride(1) % 16 == 0  # stride_kh is multiple of 16
+            and v.stride(1) % 16 == 0  # stride_vh is multiple of 16
+            and lse.stride(1) % 16 == 0  # stride_mh is multiple of 16
+            and delta.stride(1) % 16 == 0  # stride_deltah is multiple of 16
+            and do.stride(1) % 16 == 0  # stride_doh is multiple of 16
+            and DQ.stride(1) % 16 == 0  # stride_dqh is multiple of 16
+            and DK.stride(1) % 16 == 0  # stride_dkh is multiple of 16
+            and DV.stride(1) % 16 == 0  # stride_dvh is multiple of 16
         )
 
         grid = lambda args: (
