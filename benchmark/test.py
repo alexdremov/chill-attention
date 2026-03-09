@@ -7,8 +7,6 @@ sys.path.insert(0, f"{os.path.dirname(os.path.realpath(__file__))}/..")
 
 from chill_attention import (
     CausalChillMask,
-    ChunkwiseChillMask,
-    PrefixLMChillMask,
     chill_attention,
 )
 

@@ -4,7 +4,6 @@ import sys
 import numpy as np
 import pytest
 import torch
-import torch.nn.functional as F
 from torch.nn.attention.flex_attention import create_mask
 
 sys.path.insert(0, f"{os.path.dirname(os.path.realpath(__file__))}/..")

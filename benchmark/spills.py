@@ -3,7 +3,6 @@ import json
 import math
 import os
 import sys
-import time
 from collections import defaultdict
 
 import numpy as np
@@ -64,11 +63,8 @@ def _make_fwd_args(q, k, v, lens, config):
     kt = k.transpose(-1, -2)
     Q_BLOCK_DIVISIBLE = T % TILE_Q_SIZE == 0
     K_BLOCK_DIVISIBLE = T % TILE_K_SIZE == 0
-    grid = lambda args: (
-        batch,
-        heads,
-        triton.cdiv(T, args["TILE_Q_SIZE"]),
-    )
+    def grid(args):
+        return batch, heads, triton.cdiv(T, args["TILE_Q_SIZE"])
     O = torch.zeros_like(q, memory_format=torch.contiguous_format)
     LSE = torch.zeros(q.shape[:3], dtype=torch.float32, device=q.device)
 
@@ -83,7 +79,7 @@ def _make_fwd_args(q, k, v, lens, config):
         mask.has_full_blocks(TILE_Q_SIZE, TILE_K_SIZE, T, args=mask.constargs),
     )
 
-    q_lims_continious = mask.q_lims_continious()
+    mask.q_lims_continious()
     k_lims_continious = mask.k_lims_continious()
 
     args = [
@@ -129,11 +125,8 @@ def _make_fwd_args(q, k, v, lens, config):
 
 def _make_bwd_args(q, k, v, lens, delta, DQ, DK, DV, lse, do, config):
     batch, heads, T, HEAD_DIM = q.shape
-    grid = lambda args: (
-        batch,
-        heads,
-        triton.cdiv(T, args["TILE_DQ_Q_SIZE"]) + triton.cdiv(T, args["TILE_DK_K_SIZE"]),
-    )
+    def grid(args):
+        return batch, heads, triton.cdiv(T, args["TILE_DQ_Q_SIZE"]) + triton.cdiv(T, args["TILE_DK_K_SIZE"])
     TILE_DQ_Q_SIZE, TILE_DQ_K_SIZE, N_WARPS, PIPELINING, TENSORS_PRELOAD = config
     TILE_DK_Q_SIZE = TILE_DQ_Q_SIZE
     TILE_DK_K_SIZE = TILE_DQ_K_SIZE

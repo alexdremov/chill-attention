@@ -144,7 +144,8 @@ for mask in masks_to_bench:
                 autotune=autotune,
             )
         elif "torch" in provider:
-            operation = lambda **kwargs: _chill_reference_naive(**kwargs)[0]
+            def operation(**kwargs):
+                return _chill_reference_naive(**kwargs)[0]
             args = dict(mask=mask, q=q, k=k, v=v, lens=lens)
         elif "flex" in provider:
             flex_mask = mask.make_flex_mask(time)
@@ -152,11 +153,11 @@ for mask in masks_to_bench:
             args = dict(query=q, key=k, value=v, block_mask=flex_mask)
 
         assert operation is not None
-        fn = lambda: operation(**args)
+        def fn():
+            return operation(**args)
         if "compile" in provider:
-            fn = lambda: torch.compile(
-                operation, mode="max-autotune-no-cudagraphs" if autotune else None
-            )(**args)
+            def fn():
+                return torch.compile(operation, mode="max-autotune-no-cudagraphs" if autotune else None)(**args)
 
         ref, res_mask = _chill_reference_naive(mask, q, k, v, lens)
         ref, res_mask = ref.cuda(), res_mask.cuda()
@@ -206,7 +207,7 @@ for mask in masks_to_bench:
             msg=lambda x: f"error in {provider}\n{x}",
         )
 
-        if "bwd" in provider and not "flex" in provider:  # flex is failing
+        if "bwd" in provider and "flex" not in provider:  # flex is failing
             for i, (d_ref, d_tri) in enumerate(
                 [(dq_ref, dq), (dk_ref, dk), (dv_ref, dv)]
             ):

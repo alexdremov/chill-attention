@@ -154,6 +154,7 @@ def _chill_attn_fwd(
     )
 
     q_tile_indices = q_token_idx + tl.arange(0, TILE_Q_SIZE)
+    k_tile_arange = tl.arange(0, TILE_K_SIZE)
     q_lens_mask = (
         q_tile_indices[:, None] < seq_len
     )
@@ -208,17 +209,23 @@ def _chill_attn_fwd(
             q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32
         )
 
-        kv_indices = kv_token_idx + tl.arange(0, TILE_K_SIZE)
+        kv_indices = kv_token_idx + k_tile_arange
         mask = q_lens_mask & (
             kv_indices[None, :] < seq_len
         )
-        if not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args):
-            q_tile_indices = q_token_idx + tl.arange(0, TILE_Q_SIZE)
+
+        is_full = False
+        if HAS_FULL_BLOCKS:
+            is_full = is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args)
+
+        if not is_full:
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
 
         if not PRESCALE_QK:
             qk = qk * softmax_scale
-        qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
+
+        if not (is_full and Q_BLOCK_DIVISIBLE and K_BLOCK_DIVISIBLE):
+            qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
 
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
@@ -988,7 +995,12 @@ def _chill_attn_bwd_dq(
         mask = q_len_mask & (
             kv_indices[None, :] < seq_len
         )
-        if not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args):
+
+        is_full = False
+        if HAS_FULL_BLOCKS:
+            is_full = is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args)
+
+        if not is_full:
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
 
         if not TENSORS_PRELOAD:
@@ -1005,7 +1017,8 @@ def _chill_attn_bwd_dq(
                         boundary_check=(0,),
                     ).trans()
 
-        p = tl.where(mask, p, 0.0)
+        if not (is_full and K_BLOCK_DIVISIBLE):
+            p = tl.where(mask, p, 0.0)
         dp = tl.dot(do.to(vT.dtype), vT, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         ds = p * (dp - di[:, None])
         dq = tl.dot(ds.to(kT.dtype), tl.trans(kT), dq, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
@@ -1052,9 +1065,7 @@ def _chill_attn_bwd_dkdv(
     )
 
     kv_indices = kv_token_idx + tl.arange(0, TILE_K_SIZE)
-
     tile_q_arange = tl.arange(0, TILE_Q_SIZE)
-
     kv_lens_mask = (
         kv_indices[:, None] < seq_len
     )
@@ -1133,9 +1144,16 @@ def _chill_attn_bwd_dkdv(
         mask = kv_lens_mask & (
             q_tile_indices[None, :] < seq_len
         )
-        if not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args):
+        
+        is_full = False
+        if HAS_FULL_BLOCKS:
+            is_full = is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args)
+            
+        if not is_full:
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
-        pT = tl.where(mask, pT, 0.0)
+        
+        if not (is_full and Q_BLOCK_DIVISIBLE and K_BLOCK_DIVISIBLE):
+            pT = tl.where(mask, pT, 0.0)
 
         if not TENSORS_PRELOAD:
             if USE_TMA:
@@ -1171,7 +1189,7 @@ def _chill_attn_bwd_dkdv(
         tl.static_assert(Di.dtype == tl.float32)
         # Compute dP and dS.
         dsT = pT * (dpT - Di[None, :])
-        dk = tl.dot(dsT.to(qT.dtype), tl.trans(qT), dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
+        dk = tl.dot(dsT.to(qT.dtype), q, dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
     dk *= SM_SCALE
     return dk, dv
 # fmt: on
@@ -1287,11 +1305,8 @@ def register_chill_mask(mask: ChillMask):
             )
         )
 
-        grid = lambda args: (
-            batch,
-            heads,
-            triton.cdiv(T, args["TILE_Q_SIZE"]),
-        )
+        def grid(args):
+            return batch, heads, triton.cdiv(T, args['TILE_Q_SIZE'])
 
         args = [
             q,
@@ -1416,11 +1431,8 @@ def register_chill_mask(mask: ChillMask):
         _triton_set_alloc()
 
         delta = torch.empty(o.shape[:-1], dtype=torch.float32, device=o.device)
-        grid = lambda args: (
-            batch,
-            heads,
-            triton.cdiv(T, args["TILE_SIZE"]),
-        )
+        def grid(args):
+            return batch, heads, triton.cdiv(T, args['TILE_SIZE'])
         _chill_attn_bwd_precompute[grid](
             o,
             do,
@@ -1467,12 +1479,8 @@ def register_chill_mask(mask: ChillMask):
             and DV.stride(1) % 16 == 0  # stride_dvh is multiple of 16
         )
 
-        grid = lambda args: (
-            batch,
-            heads,
-            triton.cdiv(T, args["TILE_DQ_Q_SIZE"])
-            + triton.cdiv(T, args["TILE_DK_K_SIZE"]),
-        )
+        def grid(args):
+            return batch, heads, triton.cdiv(T, args['TILE_DQ_Q_SIZE']) + triton.cdiv(T, args['TILE_DK_K_SIZE'])
 
         args = [
             q,
@@ -1705,7 +1713,7 @@ def chill_attention(
     lens: torch.Tensor | None = None,
     sm_scale: float | None = None,
     return_lse=False,
-    prescale_qk=False,
+    prescale_qk=True,
     precision="ieee",
     autotune=False,
 ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
@@ -1739,7 +1747,6 @@ def chill_attention(
         >>> mask = CausalChillMask()
         >>> output = chill_attention(q, k, v, lens=None, mask=mask)
     """
-    import triton.runtime._allocation
 
     # Compile and register the mask if not already done
     register_chill_mask(mask)
