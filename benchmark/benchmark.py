@@ -52,7 +52,7 @@ def make_configs_for_mask(mask):
 
     for param in params:
         for mode in (
-            # "bwd",
+            "bwd",
             "fwd",
         ):
             line_vals = [
