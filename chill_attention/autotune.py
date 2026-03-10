@@ -9,22 +9,22 @@ logger = logging.getLogger(__name__)
 
 _a100_fwd_default_config = {
     (torch.bfloat16, 16): (64, 64, 4, 4, False),
-    (torch.bfloat16, 32): (16, 64, 4, 3, False),
+    (torch.bfloat16, 32): (64, 64, 4, 3, False),
     (torch.bfloat16, 64): (64, 64, 4, 3, False),
-    (torch.bfloat16, 128): (32, 64, 4, 3, False),
-    (torch.bfloat16, 256): (32, 64, 4, 2, True),
+    (torch.bfloat16, 128): (64, 64, 4, 3, False),
+    (torch.bfloat16, 256): (64, 64, 4, 2, True),
     #
     (torch.float16, 16): (64, 64, 4, 3, False),
-    (torch.float16, 32): (16, 16, 1, 3, True),
-    (torch.float16, 64): (16, 64, 1, 3, False),
-    (torch.float16, 128): (32, 64, 4, 2, True),
-    (torch.float16, 256): (32, 64, 4, 2, True),
+    (torch.float16, 32): (64, 64, 4, 3, True),
+    (torch.float16, 64): (64, 64, 4, 3, False),
+    (torch.float16, 128): (64, 64, 4, 2, True),
+    (torch.float16, 256): (64, 64, 4, 2, True),
     #
-    (torch.float32, 16): (16, 64, 2, 1, True),
-    (torch.float32, 32): (16, 64, 2, 1, True),
-    (torch.float32, 64): (16, 32, 2, 2, False),
-    (torch.float32, 128): (16, 64, 4, 2, False),
-    (torch.float32, 256): (16, 64, 4, 2, True),
+    (torch.float32, 16): (32, 64, 4, 1, True),
+    (torch.float32, 32): (32, 64, 4, 1, True),
+    (torch.float32, 64): (32, 32, 4, 2, False),
+    (torch.float32, 128): (32, 64, 4, 2, False),
+    (torch.float32, 256): (32, 64, 4, 2, True),
 }
 _h100_fwd_default_config = {
     (torch.bfloat16, 16): (16, 32, 1, 4, True),
@@ -115,7 +115,7 @@ def strides(t: torch.Tensor, expected_size=None):
     return [t.stride(i) for i in range(t.ndim)]
 
 
-def _get_forward_autotune_configs(head_dim, dtype):
+def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
     TILE_Q_SIZE, TILE_K_SIZE, N_WARPS, PIPELINING, TENSORS_PRELOAD = (
         _get_default_config_fwd(head_dim, dtype)
     )
@@ -137,8 +137,10 @@ def _get_forward_autotune_configs(head_dim, dtype):
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
-    for q, k, pipe, TENSORS_PRELOAD, warp in itertools.product(
-        additional_q, additional_k, additional_pipe, [True, False], warps
+    split_loops_options = [True, False] if has_k_full_range else [False]
+    
+    for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS in itertools.product(
+        additional_q, additional_k, additional_pipe, [True, False], warps, split_loops_options
     ):
         results.append(
             triton.Config(
@@ -147,6 +149,7 @@ def _get_forward_autotune_configs(head_dim, dtype):
                     TILE_K_SIZE=k,
                     PIPELINING=pipe,
                     TENSORS_PRELOAD=TENSORS_PRELOAD,
+                    SPLIT_LOOPS=SPLIT_LOOPS,
                 ),
                 num_warps=warp,
                 num_stages=pipe,

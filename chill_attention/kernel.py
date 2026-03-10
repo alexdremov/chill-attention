@@ -58,6 +58,7 @@ def _chill_attn_fwd(
     TILE_Q_SIZE: tl.constexpr,  #
     TILE_K_SIZE: tl.constexpr,  #
     PIPELINING: tl.constexpr,  #
+    SPLIT_LOOPS: tl.constexpr,  #
     Q_BLOCK_DIVISIBLE: tl.constexpr,  #
     K_BLOCK_DIVISIBLE: tl.constexpr,  #
     HAS_FULL_BLOCKS: tl.constexpr,  #
@@ -176,85 +177,115 @@ def _chill_attn_fwd(
     if PRESCALE_QK:
         q_tile = q_tile * softmax_scale
 
+    # Determine full block range for loop splitting
+    full_kv_start_tile = kv_end_tile_idx
+    full_kv_end_tile = kv_start_tile_idx
+
+    if SPLIT_LOOPS and HAS_FULL_BLOCKS:
+        fn_k_full_range: tl.constexpr = mask_fns[4]
+        
+        # Explicitly calculate the range of keys that are unmasked for ALL queries in the tile
+        full_k_start, full_k_end = fn_k_full_range(q_token_idx, TILE_Q_SIZE, seq_len, mask_args)
+        
+        # Convert token indices to tile indices
+        # A tile is FULL only if its entire range [kv_token_idx, kv_token_idx + TILE_K_SIZE)
+        # is within the unmasked range [full_k_start, full_k_end).
+        full_kv_start_tile = tl.cdiv(full_k_start, TILE_K_SIZE)
+        full_kv_end_tile = full_k_end // TILE_K_SIZE
+
+    # Ensure boundaries are valid
+    full_kv_start_tile = tl.maximum(kv_start_tile_idx, full_kv_start_tile)
+    full_kv_end_tile = tl.minimum(kv_end_tile_idx, full_kv_end_tile)
+    if full_kv_start_tile >= full_kv_end_tile:
+        full_kv_start_tile = kv_end_tile_idx
+        full_kv_end_tile = kv_end_tile_idx
+
+    # --- LOOP 1: Prefix Partial Blocks ---
     for kv_tile_idx in tl.range(
-        kv_start_tile_idx, kv_end_tile_idx, num_stages=PIPELINING
+        kv_start_tile_idx, full_kv_start_tile, num_stages=PIPELINING
     ):
         kv_token_idx = kv_tile_idx * TILE_K_SIZE
-
+        # [Load and Dot logic...]
         if USE_TMA:
             k_tile = k_desc.load([kv_token_idx, 0])
-            if TENSORS_PRELOAD:
-                v_tile = v_desc.load([kv_token_idx, 0])
+            if TENSORS_PRELOAD: v_tile = v_desc.load([kv_token_idx, 0])
         else:
-            if K_BLOCK_DIVISIBLE:
-                k_tile = tl.load(
-                    tl.advance(k_desc, (kv_token_idx, 0)),
-                )
-                if TENSORS_PRELOAD:
-                    v_tile = tl.load(
-                        tl.advance(v_desc, (kv_token_idx, 0)),
-                    )
-            else:
-                k_tile = tl.load(
-                    tl.advance(k_desc, (kv_token_idx, 0)),
-                    boundary_check=(0,),
-                )
-                if TENSORS_PRELOAD:
-                    v_tile = tl.load(
-                        tl.advance(v_desc, (kv_token_idx, 0)),
-                        boundary_check=(0,),
-                    )
+            k_tile = tl.load(tl.advance(k_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+            if TENSORS_PRELOAD: v_tile = tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
 
-        qk = tl.dot(
-            q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32
-        )
-
+        qk = tl.dot(q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         kv_indices = kv_token_idx + k_tile_arange
-        mask = q_lens_mask & (
-            kv_indices[None, :] < seq_len
-        )
-
-        is_full = False
-        if HAS_FULL_BLOCKS:
-            is_full = is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len=seq_len, args=mask_args)
-
-        if not is_full:
-            mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
-
-        if not PRESCALE_QK:
-            qk = qk * softmax_scale
-
+        mask = q_lens_mask & (kv_indices[None, :] < seq_len)
+        mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
+        
+        if not PRESCALE_QK: qk = qk * softmax_scale
         qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
-
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
         alpha = tl.math.exp2(m_i - m_ij_safe)
-
         p = tl.math.exp2(qk - m_ij_safe[:, None])
         l_i = l_i * alpha + tl.sum(p, 1)
         acc = acc * alpha[:, None]
-
         if not TENSORS_PRELOAD:
-            if USE_TMA:
-                v_tile = v_desc.load([kv_token_idx, 0])
-            else:
-                if K_BLOCK_DIVISIBLE:
-                    v_tile = tl.load(
-                        tl.advance(v_desc, (kv_token_idx, 0)),
-                    )
-                else:
-                    v_tile = tl.load(
-                        tl.advance(v_desc, (kv_token_idx, 0)),
-                        boundary_check=(0,),
-                    )
+            v_tile = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+        acc = tl.dot(p.to(v_tile.dtype), v_tile, acc, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
+        m_i = m_ij
 
-        acc = tl.dot(
-            p.to(v_tile.dtype),
-            v_tile,
-            acc,
-            input_precision=INPUT_PRECISION,
-            out_dtype=tl.float32,
-        )
+    # --- LOOP 2: Full Blocks (Hot Loop) ---
+    for kv_tile_idx in tl.range(
+        full_kv_start_tile, full_kv_end_tile, num_stages=PIPELINING
+    ):
+        kv_token_idx = kv_tile_idx * TILE_K_SIZE
+        if USE_TMA:
+            k_tile = k_desc.load([kv_token_idx, 0])
+            if TENSORS_PRELOAD: v_tile = v_desc.load([kv_token_idx, 0])
+        else:
+            # We know these are full blocks, but they might still be near seq_len if not divisible
+            k_tile = tl.load(tl.advance(k_desc, (kv_token_idx, 0)))
+            if TENSORS_PRELOAD: v_tile = tl.load(tl.advance(v_desc, (kv_token_idx, 0)))
+
+        qk = tl.dot(q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
+        if not PRESCALE_QK: qk = qk * softmax_scale
+        # NO MASKING HERE
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
+        alpha = tl.math.exp2(m_i - m_ij_safe)
+        p = tl.math.exp2(qk - m_ij_safe[:, None])
+        l_i = l_i * alpha + tl.sum(p, 1)
+        acc = acc * alpha[:, None]
+        if not TENSORS_PRELOAD:
+            v_tile = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)))
+        acc = tl.dot(p.to(v_tile.dtype), v_tile, acc, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
+        m_i = m_ij
+
+    # --- LOOP 3: Suffix Partial Blocks ---
+    for kv_tile_idx in tl.range(
+        full_kv_end_tile, kv_end_tile_idx, num_stages=PIPELINING
+    ):
+        kv_token_idx = kv_tile_idx * TILE_K_SIZE
+        if USE_TMA:
+            k_tile = k_desc.load([kv_token_idx, 0])
+            if TENSORS_PRELOAD: v_tile = v_desc.load([kv_token_idx, 0])
+        else:
+            k_tile = tl.load(tl.advance(k_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+            if TENSORS_PRELOAD: v_tile = tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+
+        qk = tl.dot(q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
+        kv_indices = kv_token_idx + k_tile_arange
+        mask = q_lens_mask & (kv_indices[None, :] < seq_len)
+        mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
+        
+        if not PRESCALE_QK: qk = qk * softmax_scale
+        qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
+        alpha = tl.math.exp2(m_i - m_ij_safe)
+        p = tl.math.exp2(qk - m_ij_safe[:, None])
+        l_i = l_i * alpha + tl.sum(p, 1)
+        acc = acc * alpha[:, None]
+        if not TENSORS_PRELOAD:
+            v_tile = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+        acc = tl.dot(p.to(v_tile.dtype), v_tile, acc, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         m_i = m_ij
 
     l_i = tl.where(l_i == 0.0, 1, l_i)
@@ -1241,6 +1272,7 @@ def register_chill_mask(mask: ChillMask):
         mask.k_range_for_q_jit,
         mask.q_range_for_k_jit,
         mask.is_full_block_jit,
+        mask.k_full_range_for_q_jit,
     )
 
     q_lims_continious = mask.q_lims_continious()
@@ -1347,7 +1379,9 @@ def register_chill_mask(mask: ChillMask):
 
         if autotune:
             if (HEAD_DIM, q.dtype) not in autotunes:
-                configs = _get_forward_autotune_configs(HEAD_DIM, q.dtype)
+                configs = _get_forward_autotune_configs(
+                    HEAD_DIM, q.dtype, has_k_full_range=mask.has_k_full_range()
+                )
                 configs = _prune_notfitting_configs(configs, kernel, args, kwargs, grid)
                 logger.info(
                     f"{mask_name} {(HEAD_DIM, q.dtype)}: using {len(configs)} configs for forward autotune"
@@ -1373,6 +1407,7 @@ def register_chill_mask(mask: ChillMask):
                     TILE_K_SIZE=lambda _: TILE_K_SIZE,
                     PIPELINING=lambda _: PIPELINING,
                     TENSORS_PRELOAD=lambda _: TENSORS_PRELOAD,
+                    SPLIT_LOOPS=lambda _: mask.has_k_full_range(),
                     num_warps=lambda _: N_WARPS,
                     num_stages=lambda _: PIPELINING,
                 )

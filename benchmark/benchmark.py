@@ -51,7 +51,10 @@ def make_configs_for_mask(mask):
     gpu_capability = f"nv-{gpu_capability[0]}_{gpu_capability[1]}"
 
     for param in params:
-        for mode in ("bwd", "fwd"):
+        for mode in (
+            # "bwd",
+            "fwd",
+        ):
             line_vals = [
                 # f"chill-{mode}-compile",
                 f"chill-{mode}-compile-autotune",
