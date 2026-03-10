@@ -596,22 +596,38 @@ class ChillMask(ABC):
             for i in range(len(full_ranges)):
                 qb = i * TILE_Q
                 k_start, k_end = full_ranges[i]
+                ks, ke = k_start.item(), k_end.item()
 
-                if k_end > k_start:
+                if ke > ks:
                     # Draw full range background on axes[0] (q on y, k on x)
-                    rect = matplotlib.patches.Rectangle(
-                        (k_start.item() - 0.5, qb - 0.5),
-                        k_end.item() - k_start.item(),
+                    rect0 = matplotlib.patches.Rectangle(
+                        (ks - 0.5, qb - 0.5),
+                        ke - ks,
                         TILE_Q,
-                        color="cyan",
-                        alpha=0.3,
-                        zorder=1,
-                        label="Full Range" if i == 0 else None,
-                        ec="blue",
-                        ls="--",
-                        lw=0.5,
+                        color="yellow",
+                        alpha=0.6,
+                        zorder=4,
+                        label="Full Range (Hot Loop)" if i == 0 else None,
+                        ec="red",
+                        ls="-",
+                        lw=1.5,
                     )
-                    axes[0].add_patch(rect)
+                    axes[0].add_patch(rect0)
+
+                    # Draw full range background on axes[1] (k on y, q on x)
+                    rect1 = matplotlib.patches.Rectangle(
+                        (qb - 0.5, ks - 0.5),
+                        TILE_Q,
+                        ke - ks,
+                        color="yellow",
+                        alpha=0.6,
+                        zorder=4,
+                        ec="red",
+                        ls="-",
+                        lw=1.5,
+                    )
+                    axes[1].add_patch(rect1)
+            axes[0].legend()
 
         axes[1].legend()
         return fig

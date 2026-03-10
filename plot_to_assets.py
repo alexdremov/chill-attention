@@ -23,8 +23,17 @@ def plot_all_to_assets():
     
     for mask in masks:
         print(f"Plotting {mask}...")
-        # Plot with full range highlights
-        fig = mask.plot(max_pos=256, plot_block_types=True, TILE_Q=32, TILE_K=32)
+        # Use smaller max_pos and TILE_Q to make highlights more visible
+        max_pos = 128
+        TILE_Q = 16
+        TILE_K = 16
+        
+        if mask.has_k_full_range():
+            # Debug: print full ranges
+            ranges = mask._calc_full_ranges(max_pos, TILE_Q)
+            print(f"Full ranges for {mask.name}:\n{ranges}")
+
+        fig = mask.plot(max_pos=max_pos, plot_block_types=True, TILE_Q=TILE_Q, TILE_K=TILE_K)
         save_path = os.path.join(assets_dir, f"mask_{mask.name.lower()}.png")
         fig.savefig(save_path)
         plt.close(fig)
