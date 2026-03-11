@@ -23,16 +23,16 @@ from chill_attention import (
 )
 
 masks_to_bench = [
-    # SlidingWindowChillMask(16, 16),
+    SlidingWindowChillMask(16, 16),
     CausalChillMask(),
     ChunkwiseChillMask(16, 8),
     PrefixLMChillMask(128),
     FullChillMask(),
 ]
 
-num_points = 5
-max_time = 8000
-batches = (64,)
+num_points = 4
+max_time = 6000
+batches = (8,)
 
 
 def make_configs_for_mask(mask):
@@ -45,16 +45,21 @@ def make_configs_for_mask(mask):
             name="small",
         )
         for batch in batches
+    ] + [
+        dict(
+            batch=batch,
+            dim=128,
+            heads=4,
+            name="medium",
+        )
+        for batch in batches
     ]
 
     gpu_capability = torch.cuda.get_device_capability()
     gpu_capability = f"nv-{gpu_capability[0]}_{gpu_capability[1]}"
 
     for param in params:
-        for mode in (
-            "bwd",
-            "fwd",
-        ):
+        for mode in ("bwd", "fwd"):
             line_vals = [
                 # f"chill-{mode}-compile",
                 f"chill-{mode}-compile-autotune",
@@ -156,17 +161,22 @@ for mask in masks_to_bench:
             args = dict(query=q, key=k, value=v, block_mask=flex_mask)
 
         assert operation is not None
+
         def fn():
             return operation(**args)
+
         if "compile" in provider:
             def fn():
-                return torch.compile(operation, mode="max-autotune-no-cudagraphs" if autotune else None)(**args)
+                return torch.compile(
+                    operation, mode="max-autotune-no-cudagraphs" if autotune else None
+                )(**args)
 
         ref, res_mask = _chill_reference_naive(mask, q, k, v, lens)
         ref, res_mask = ref.cuda(), res_mask.cuda()
 
+        print(f"Starting {provider}")
+
         if "bwd" in provider:
-            cudagraph_available = False
             do = (
                 torch.randn(
                     (batch, heads, time, dim), dtype=torch.float32, device=device
@@ -174,30 +184,49 @@ for mask in masks_to_bench:
                 * res_mask
             )
 
-            def fn_back(fn):
-                res = fn()
+            # Pre-allocate gradients to ensure stable memory addresses for CUDA graphs
+            q.grad = torch.zeros_like(q)
+            k.grad = torch.zeros_like(k)
+            v.grad = torch.zeros_like(v)
+
+            def fn_back_correctness(target_fn):
+                """Executes backward pass and returns gradients for correctness testing."""
+                q.grad.zero_()
+                k.grad.zero_()
+                v.grad.zero_()
+                res = target_fn()
                 res.backward(do)
-                return res, q.grad, k.grad, v.grad
+                # Detach res immediately to destroy the autograd graph and prevent stream clashes
+                return res.detach(), q.grad, k.grad, v.grad
 
-            fn = functools.partial(fn_back, fn=fn)
-        else:
+            def fn_back_bench(target_fn):
+                """Executes backward pass and immediately destroys the autograd graph."""
+                q.grad.zero_()
+                k.grad.zero_()
+                v.grad.zero_()
+                res = target_fn()
+                res.backward(do)
+                return None
 
-            def fn_forward(fn):
-                with torch.no_grad(), torch.inference_mode():
-                    return fn()
-
-            fn = functools.partial(fn_forward, fn=fn)
-
-        print(f"Starting {provider}")
-        if "bwd" in provider:
+            # Calculate reference gradients and explicitly sever the reference graph
             ref.backward(do)
-            dq_ref, dk_ref, dv_ref = q.grad.clone(), k.grad.clone(), v.grad.clone()
-            q.grad, k.grad, v.grad = [None] * 3
+            ref = ref.detach()
+            dq_ref, dk_ref, dv_ref = q.grad.detach().clone(), k.grad.detach().clone(), v.grad.detach().clone()
 
-            actual, dq, dk, dv = fn()
-            dq, dk, dv = dq.clone(), dk.clone(), dv.clone()
+            # Execute correctness check
+            actual, dq, dk, dv = fn_back_correctness(fn)
+            dq, dk, dv = dq.detach().clone(), dk.detach().clone(), dv.detach().clone()
+
+            # Bind the function strictly for benchmarking
+            bench_target = functools.partial(fn_back_bench, target_fn=fn)
+
         else:
-            actual = fn()
+            def fn_forward(target_fn):
+                with torch.no_grad(), torch.inference_mode():
+                    return target_fn()
+
+            actual = fn_forward(fn)
+            bench_target = functools.partial(fn_forward, target_fn=fn)
 
         actual = actual * res_mask.broadcast_to(actual.shape)
 
@@ -210,10 +239,8 @@ for mask in masks_to_bench:
             msg=lambda x: f"error in {provider}\n{x}",
         )
 
-        if "bwd" in provider and "flex" not in provider:  # flex is failing
-            for i, (d_ref, d_tri) in enumerate(
-                [(dq_ref, dq), (dk_ref, dk), (dv_ref, dv)]
-            ):
+        if "bwd" in provider and "flex" not in provider:
+            for i, (d_ref, d_tri) in enumerate([(dq_ref, dq), (dk_ref, dk), (dv_ref, dv)]):
                 atol = 1e-2
                 torch.testing.assert_close(
                     d_tri,
@@ -223,12 +250,13 @@ for mask in masks_to_bench:
                 )
 
         with torch.inference_mode() if "fwd" in provider else contextlib.nullcontext():
-            bench = triton.testing.do_bench
             if cudagraph_available:
-                bench = triton.testing.do_bench_cudagraph
+                bench_fn = triton.testing.do_bench_cudagraph
             else:
-                print("bench with disabled cudagraph")
-            ms = bench(fn, rep=1000, return_mode="mean", grad_to_none=(q, k, v))
+                print("NOT using cudagraphs")
+                bench_fn = triton.testing.do_bench
+
+            ms = bench_fn(bench_target, rep=128, return_mode="mean")
 
         mask_tensor = mask.make_mask(time)
         time_sq = time * time * (mask_tensor.sum().item() / mask_tensor.numel())
