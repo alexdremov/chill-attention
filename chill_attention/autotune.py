@@ -158,7 +158,7 @@ def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
     return results
 
 
-def _get_backward_autotune_configs(head_dim, dtype):
+def _get_backward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
     TILE_DQ_Q_SIZE, TILE_DQ_K_SIZE, N_WARPS, PIPELINING, TENSORS_PRELOAD = (
         _get_default_config_bwd(head_dim, dtype=dtype)
     )
@@ -177,8 +177,10 @@ def _get_backward_autotune_configs(head_dim, dtype):
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
-    for q, k, pipe, TENSORS_PRELOAD, warp in itertools.product(
-        additional_q, additional_k, additional_pipe, [True, False], warps
+    split_loops_options = [True, False] if has_k_full_range else [False]
+
+    for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS in itertools.product(
+        additional_q, additional_k, additional_pipe, [True, False], warps, split_loops_options
     ):
         results.append(
             triton.Config(
@@ -189,6 +191,7 @@ def _get_backward_autotune_configs(head_dim, dtype):
                     TILE_DK_K_SIZE=k,
                     PIPELINING=pipe,
                     TENSORS_PRELOAD=TENSORS_PRELOAD,
+                    SPLIT_LOOPS=SPLIT_LOOPS,
                 ),
                 num_warps=warp,
                 num_stages=pipe,

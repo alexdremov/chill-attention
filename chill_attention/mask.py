@@ -129,6 +129,28 @@ class ChillMask(ABC):
         return 0, 0
 
     @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        """
+        Determine the range of query indices that are fully unmasked for an entire key tile.
+        A query q is in this range if for all k in [kb, kb + TILE_K), (q, k) is unmasked.
+
+        Args:
+            kb (int): Key tile start index
+            TILE_K (tl.constexpr): Key tile size
+            seq_len: (tl.tensor): Len of the current sequence
+            args: Constants used to parameterize the mask (tuple from __init__)
+
+        Returns:
+            tuple[tl.tensor, tl.tensor]: (start_query_idx, end_query_idx) exclusive range [start, end)
+        """
+        return 0, 0
+
+    @staticmethod
     def has_k_full_range():
         """
         Whether the mask supports explicit unmasked range calculation.
@@ -229,6 +251,11 @@ class ChillMask(ABC):
     def k_full_range_for_q_jit(self):
         """Cached JIT-compiled version of k_full_range_for_q function."""
         return triton.jit()(self.k_full_range_for_q)
+
+    @cached_static_property
+    def q_full_range_for_k_jit(self):
+        """Cached JIT-compiled version of q_full_range_for_k function."""
+        return triton.jit()(self.q_full_range_for_k)
 
     @staticmethod
     @triton.jit
@@ -779,6 +806,15 @@ class FullChillMask(ChillMask):
         return 0, seq_len
 
     @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        return 0, seq_len
+
+    @staticmethod
     def has_k_full_range():
         return True
 
@@ -846,6 +882,16 @@ class CausalChillMask(ChillMask):
         args,
     ) -> tuple[tl.tensor, tl.tensor]:
         return 0, qb + 1
+
+    @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        start = tl.maximum(0, kb + TILE_K - 1)
+        return start, seq_len
 
     @staticmethod
     def has_k_full_range():
