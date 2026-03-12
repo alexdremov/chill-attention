@@ -66,6 +66,7 @@ def _chill_attn_fwd(
     RCP_LN2: tl.constexpr,  #
     TENSORS_PRELOAD:  tl.constexpr,  #
     k_lims_continious: tl.constexpr,  #
+    ROWS_GUARANTEED_SAFE: tl.constexpr,  #
     mask_fns,  #
     mask_args,  #
 ):
@@ -223,7 +224,10 @@ def _chill_attn_fwd(
         if not PRESCALE_QK: qk = qk * softmax_scale
         qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
-        m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
+        if ROWS_GUARANTEED_SAFE:
+            m_ij_safe = m_ij
+        else:
+            m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
         alpha = tl.math.exp2(m_i - m_ij_safe)
         p = tl.math.exp2(qk - m_ij_safe[:, None])
         l_i = l_i * alpha + tl.sum(p, 1)
@@ -280,7 +284,10 @@ def _chill_attn_fwd(
         if not PRESCALE_QK: qk = qk * softmax_scale
         qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
-        m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
+        if ROWS_GUARANTEED_SAFE:
+            m_ij_safe = m_ij
+        else:
+            m_ij_safe = tl.where(m_ij == float("-inf"), tl.cast(0, m_ij.dtype), m_ij)
         alpha = tl.math.exp2(m_i - m_ij_safe)
         p = tl.math.exp2(qk - m_ij_safe[:, None])
         l_i = l_i * alpha + tl.sum(p, 1)
@@ -418,6 +425,7 @@ def _chill_attn_bwd(
     mask_args,
     q_lims_continious: tl.constexpr,
     k_lims_continious: tl.constexpr,
+    ROWS_GUARANTEED_SAFE: tl.constexpr,
 ):
     batch = tl.program_id(0)
     idx = tl.program_id(1)
@@ -473,6 +481,7 @@ def _chill_attn_bwd(
             PIPELINING=PIPELINING,
             SPLIT_LOOPS=SPLIT_LOOPS,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
+            ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
             mask_fns=mask_fns,
             mask_args=mask_args,
             k_lims_continious=k_lims_continious,
@@ -509,6 +518,7 @@ def _chill_attn_bwd(
             PIPELINING=PIPELINING,
             SPLIT_LOOPS=SPLIT_LOOPS,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
+            ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
             mask_fns=mask_fns,
             mask_args=mask_args,
             q_lims_continious=q_lims_continious,
@@ -1004,6 +1014,7 @@ def _chill_attn_bwd_dq(
     SPLIT_LOOPS: tl.constexpr,
     TENSORS_PRELOAD: tl.constexpr,
     USE_TMA: tl.constexpr,
+    ROWS_GUARANTEED_SAFE: tl.constexpr,
     mask_fns,
     mask_args,
     k_lims_continious: tl.constexpr,
@@ -1047,6 +1058,10 @@ def _chill_attn_bwd_dq(
         full_kv_start_tile = kv_end_tile_idx
         full_kv_end_tile = kv_end_tile_idx
 
+    m_safe = m
+    if not ROWS_GUARANTEED_SAFE:
+        m_safe = tl.where(m == float("-inf"), 0.0, m)
+
     # --- LOOP 1: Prefix Partial Blocks ---
     for kv_tile_idx in tl.range(
         kv_start_tile_idx, full_kv_start_tile, num_stages=PIPELINING
@@ -1062,7 +1077,7 @@ def _chill_attn_bwd_dq(
 
         qk = tl.dot(q, k.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not PRESCALE_QK: qk = qk * softmax_scale_ln2
-        p = tl.math.exp2(qk - m)
+        p = tl.math.exp2(qk - m_safe)
 
         kv_indices = kv_token_idx + tile_k_arange
         mask = q_len_mask & (kv_indices[None, :] < seq_len)
@@ -1090,7 +1105,7 @@ def _chill_attn_bwd_dq(
 
         qk = tl.dot(q, k.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not PRESCALE_QK: qk = qk * softmax_scale_ln2
-        p = tl.math.exp2(qk - m)
+        p = tl.math.exp2(qk - m_safe)
         # NO MASKING HERE
         if not TENSORS_PRELOAD:
             v = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)))
@@ -1113,7 +1128,7 @@ def _chill_attn_bwd_dq(
 
         qk = tl.dot(q, k.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not PRESCALE_QK: qk = qk * softmax_scale_ln2
-        p = tl.math.exp2(qk - m)
+        p = tl.math.exp2(qk - m_safe)
 
         kv_indices = kv_token_idx + tile_k_arange
         mask = q_len_mask & (kv_indices[None, :] < seq_len)
@@ -1154,6 +1169,7 @@ def _chill_attn_bwd_dkdv(
     mask_fns,
     mask_args,
     q_lims_continious: tl.constexpr,
+    ROWS_GUARANTEED_SAFE: tl.constexpr,
 ):
     fn_mask: tl.constexpr = mask_fns[0]
     fn_q_range_for_k: tl.constexpr = mask_fns[2]
@@ -1216,7 +1232,11 @@ def _chill_attn_bwd_dkdv(
         if not TENSORS_PRELOAD:
             m = lse_desc.load([q_token_idx]) if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
 
-        pT = tl.math.exp2(qkT - m[None, :])
+        m_safe = m
+        if not ROWS_GUARANTEED_SAFE:
+            m_safe = tl.where(m == float("-inf"), 0.0, m)
+
+        pT = tl.math.exp2(qkT - m_safe[None, :])
         q_tile_indices = q_token_idx + tile_q_arange
         mask = kv_lens_mask & (q_tile_indices[None, :] < seq_len)
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
@@ -1253,7 +1273,11 @@ def _chill_attn_bwd_dkdv(
         if not TENSORS_PRELOAD:
             m = lse_desc.load([q_token_idx]) if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)))
 
-        pT = tl.math.exp2(qkT - m[None, :])
+        m_safe = m
+        if not ROWS_GUARANTEED_SAFE:
+            m_safe = tl.where(m == float("-inf"), 0.0, m)
+
+        pT = tl.math.exp2(qkT - m_safe[None, :])
         # NO MASKING HERE
         if not TENSORS_PRELOAD:
             do = do_desc.load([q_token_idx, 0]) if USE_TMA else tl.load(tl.advance(do_desc, (q_token_idx, 0)))
@@ -1286,7 +1310,11 @@ def _chill_attn_bwd_dkdv(
         if not TENSORS_PRELOAD:
             m = lse_desc.load([q_token_idx]) if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
 
-        pT = tl.math.exp2(qkT - m[None, :])
+        m_safe = m
+        if not ROWS_GUARANTEED_SAFE:
+            m_safe = tl.where(m == float("-inf"), 0.0, m)
+
+        pT = tl.math.exp2(qkT - m_safe[None, :])
         q_tile_indices = q_token_idx + tile_q_arange
         mask = kv_lens_mask & (q_tile_indices[None, :] < seq_len)
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
@@ -1448,6 +1476,7 @@ def register_chill_mask(mask: ChillMask):
             mask_fns=tuple(mask_fns),
             mask_args=tuple(mask_args),
             k_lims_continious=k_lims_continious,
+            ROWS_GUARANTEED_SAFE=mask.is_guaranteed_safe(),
             USE_TMA=use_tma,
             GROUP_SIZE=group_size,
         )
@@ -1646,6 +1675,7 @@ def register_chill_mask(mask: ChillMask):
             USE_TMA=use_tma,
             GROUP_SIZE=group_size,
             NUM_KV_HEADS=num_kv_heads,
+            ROWS_GUARANTEED_SAFE=mask.is_guaranteed_safe(),
         )
 
         kernel = triton.heuristics(

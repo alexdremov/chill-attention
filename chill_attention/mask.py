@@ -188,6 +188,17 @@ class ChillMask(ABC):
         return True
 
     @staticmethod
+    def is_guaranteed_safe():
+        """
+        Whether every query is guaranteed to attend to at least one key.
+        If True, we can skip safety checks for masked-out rows.
+
+        Returns:
+            bool: True if rows are guaranteed safe
+        """
+        return False
+
+    @staticmethod
     def has_full_blocks(q_tile_size, k_tile_size, seq_len, args):
         """
 
@@ -436,6 +447,10 @@ class ChillMask(ABC):
                     result.append((q, k))
 
         return result
+
+    @staticmethod
+    def is_guaranteed_safe():
+        return False
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """
@@ -818,6 +833,14 @@ class FullChillMask(ChillMask):
     def has_k_full_range():
         return True
 
+    @staticmethod
+    def is_guaranteed_safe():
+        return True
+
+    @staticmethod
+    def is_guaranteed_safe():
+        return True
+
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
 
@@ -895,6 +918,10 @@ class CausalChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
+        return True
+
+    @staticmethod
+    def is_guaranteed_safe():
         return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
@@ -998,6 +1025,10 @@ class SlidingWindowChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
+        return True
+
+    @staticmethod
+    def is_guaranteed_safe():
         return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
@@ -1147,6 +1178,10 @@ class ChunkwiseChillMask(ChillMask):
     def has_k_full_range():
         return True
 
+    @staticmethod
+    def is_guaranteed_safe():
+        return True
+
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
         context_size, back_contexts = self.constargs
@@ -1281,6 +1316,10 @@ class PrefixLMChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
+        return True
+
+    @staticmethod
+    def is_guaranteed_safe():
         return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
