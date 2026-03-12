@@ -448,10 +448,6 @@ class ChillMask(ABC):
 
         return result
 
-    @staticmethod
-    def is_guaranteed_safe():
-        return False
-
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """
         Create a PyTorch FlexAttention compatible mask if supported.
@@ -831,10 +827,6 @@ class FullChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
-        return True
-
-    @staticmethod
-    def is_guaranteed_safe():
         return True
 
     @staticmethod

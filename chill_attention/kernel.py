@@ -1450,6 +1450,8 @@ def register_chill_mask(mask: ChillMask):
         def grid(args):
             return batch, heads, triton.cdiv(T, args["TILE_Q_SIZE"])
 
+        ROWS_GUARANTEED_SAFE = mask.is_guaranteed_safe() and lens is None
+
         args = [
             q,
             k,
@@ -1476,7 +1478,7 @@ def register_chill_mask(mask: ChillMask):
             mask_fns=tuple(mask_fns),
             mask_args=tuple(mask_args),
             k_lims_continious=k_lims_continious,
-            ROWS_GUARANTEED_SAFE=mask.is_guaranteed_safe(),
+            ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
             USE_TMA=use_tma,
             GROUP_SIZE=group_size,
         )
@@ -1638,6 +1640,8 @@ def register_chill_mask(mask: ChillMask):
                 + num_kv_heads * triton.cdiv(T, args["TILE_DK_K_SIZE"]),
             )
 
+        ROWS_GUARANTEED_SAFE = mask.is_guaranteed_safe() and lens is None
+
         args = [
             q,
             k,
@@ -1675,7 +1679,7 @@ def register_chill_mask(mask: ChillMask):
             USE_TMA=use_tma,
             GROUP_SIZE=group_size,
             NUM_KV_HEADS=num_kv_heads,
-            ROWS_GUARANTEED_SAFE=mask.is_guaranteed_safe(),
+            ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
         )
 
         kernel = triton.heuristics(
