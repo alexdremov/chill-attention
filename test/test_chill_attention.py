@@ -79,7 +79,11 @@ def test_masks_verify(mask):
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
 @pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
-@pytest.mark.parametrize("H_KV_FACT", [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)], ids=lambda x: f"H{x[0]}-HKV{x[1]}")
+@pytest.mark.parametrize(
+    "H_KV_FACT",
+    [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)],
+    ids=lambda x: f"H{x[0]}-HKV{x[1]}",
+)
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1024], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_forward(
@@ -168,7 +172,11 @@ def test_simple_chill_forward(
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
 @pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
-@pytest.mark.parametrize("H_KV_FACT", [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)], ids=lambda x: f"H{x[0]}-HKV{x[1]}")
+@pytest.mark.parametrize(
+    "H_KV_FACT",
+    [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)],
+    ids=lambda x: f"H{x[0]}-HKV{x[1]}",
+)
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1025], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_backward(

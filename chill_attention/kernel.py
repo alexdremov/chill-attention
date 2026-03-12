@@ -368,6 +368,7 @@ def _chill_attn_fwd(
     dict(
         RCP_LN2=lambda _: math.log2(math.e),
         DQ_TILES_NUM=lambda args: triton.cdiv(args['T'], args["TILE_DQ_Q_SIZE"]),
+        DK_TILES_NUM=lambda args: triton.cdiv(args['T'], args["TILE_DK_K_SIZE"]),
         DQ_Q_BLOCK_DIVISIBLE=lambda args : args['T'] % args['TILE_DQ_Q_SIZE'] == 0,
         DQ_K_BLOCK_DIVISIBLE=lambda args : args['T'] % args['TILE_DQ_K_SIZE'] == 0,
         DK_Q_BLOCK_DIVISIBLE=lambda args : args['T'] % args['TILE_DK_Q_SIZE'] == 0,
@@ -392,6 +393,7 @@ def _chill_attn_bwd(
     T: int,  #
     TIME_BUCKET: int,  #
     DQ_TILES_NUM: int,  #
+    DK_TILES_NUM: int,  #
     HEAD_DIM: tl.constexpr,  #
     DTYPE: tl.constexpr,  #
     INPUT_PRECISION: tl.constexpr,  #
@@ -418,10 +420,20 @@ def _chill_attn_bwd(
     k_lims_continious: tl.constexpr,
 ):
     batch = tl.program_id(0)
-    head = tl.program_id(1)
-    # Forced re-compilation marker
-    dkv_worker = tl.program_id(2) >= DQ_TILES_NUM
-    tile_id = tl.program_id(2) - (DQ_TILES_NUM * dkv_worker)
+    idx = tl.program_id(1)
+
+    num_heads = NUM_KV_HEADS * GROUP_SIZE
+    dq_total_tiles = num_heads * DQ_TILES_NUM
+
+    if idx < dq_total_tiles:
+        head = idx // DQ_TILES_NUM
+        tile_id = idx % DQ_TILES_NUM
+        dkv_worker = False
+    else:
+        idx -= dq_total_tiles
+        head = idx // DK_TILES_NUM
+        tile_id = idx % DK_TILES_NUM
+        dkv_worker = True
 
     if L is not None:
         seq_len = tl.load(L + batch * lens_stride)
@@ -1595,9 +1607,8 @@ def register_chill_mask(mask: ChillMask):
         def grid(args):
             return (
                 batch,
-                heads,
-                triton.cdiv(T, args["TILE_DQ_Q_SIZE"])
-                + triton.cdiv(T, args["TILE_DK_K_SIZE"]),
+                heads * triton.cdiv(T, args["TILE_DQ_Q_SIZE"])
+                + num_kv_heads * triton.cdiv(T, args["TILE_DK_K_SIZE"]),
             )
 
         args = [
