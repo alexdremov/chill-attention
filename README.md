@@ -30,7 +30,7 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 
 - 📦 **Pure Triton, Single File**
 
-  The entire krenel implementation is contained in a single-file Triton code. Easy experimenting and customization.
+  The entire kernel implementation is contained in a single-file Triton code. Easy experimenting and customization.
 
 ## Why So Chill?
 
