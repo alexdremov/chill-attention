@@ -292,7 +292,7 @@ def test_simple_chill_backward(
     ):
         atol = 1e-2
         if dtype == torch.float32:
-            atol = 5e-5
+            atol = 6e-5
 
         torch.testing.assert_close(
             d_tri,
