@@ -79,7 +79,7 @@ def test_masks_verify(mask):
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
 @pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
-@pytest.mark.parametrize("H", [1, 6, 8], ids=lambda x: f"heads-{x}")
+@pytest.mark.parametrize("H_KV_FACT", [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)], ids=lambda x: f"H{x[0]}-HKV{x[1]}")
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1024], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_forward(
@@ -89,10 +89,11 @@ def test_simple_chill_forward(
     noncontiguous,
     HEAD_DIM,
     B,
-    H,
+    H_KV_FACT,
     T,
     autotune,
 ):
+    H, H_KV = H_KV_FACT
     if os.environ.get("TRITON_INTERPRET") == "1" and dtype == torch.bfloat16:
         pytest.skip("skipping bf16 in interpreter mode")
         return
@@ -111,17 +112,30 @@ def test_simple_chill_forward(
         pytest.skip("reduced set for autotune")
         return
 
-    q, k, v = [
-        torch.testing.make_tensor(
-            (B, H, T, HEAD_DIM),
-            dtype=dtype,
-            device="cuda",
-            noncontiguous=noncontiguous,
-            low=-0.1,
-            high=0.1,
-        )
-        for _ in range(3)
-    ]
+    q = torch.testing.make_tensor(
+        (B, H, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
+    k = torch.testing.make_tensor(
+        (B, H_KV, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
+    v = torch.testing.make_tensor(
+        (B, H_KV, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
     for i in (q, k, v):
         i.normal_()
 
@@ -154,7 +168,7 @@ def test_simple_chill_forward(
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
 @pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
-@pytest.mark.parametrize("H", [1, 6, 8], ids=lambda x: f"heads-{x}")
+@pytest.mark.parametrize("H_KV_FACT", [(1, 1), (6, 1), (8, 1), (8, 2), (8, 8)], ids=lambda x: f"H{x[0]}-HKV{x[1]}")
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1025], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_backward(
@@ -164,10 +178,11 @@ def test_simple_chill_backward(
     noncontiguous,
     HEAD_DIM,
     B,
-    H,
+    H_KV_FACT,
     T,
     autotune,
 ):
+    H, H_KV = H_KV_FACT
     torch._dynamo.reset()
 
     torch.manual_seed(20)
@@ -192,17 +207,30 @@ def test_simple_chill_backward(
         pytest.skip("reduced set for autotune")
         return
 
-    q, k, v = [
-        torch.testing.make_tensor(
-            (B, H, T, HEAD_DIM),
-            dtype=dtype,
-            device="cuda",
-            noncontiguous=noncontiguous,
-            low=-0.1,
-            high=0.1,
-        )
-        for _ in range(3)
-    ]
+    q = torch.testing.make_tensor(
+        (B, H, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
+    k = torch.testing.make_tensor(
+        (B, H_KV, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
+    v = torch.testing.make_tensor(
+        (B, H_KV, T, HEAD_DIM),
+        dtype=dtype,
+        device="cuda",
+        noncontiguous=noncontiguous,
+        low=-0.1,
+        high=0.1,
+    )
     for i in (q, k, v):
         i.normal_().requires_grad_()
     lens = make_lens(lens, B, T)
