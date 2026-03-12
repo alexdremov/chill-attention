@@ -226,30 +226,34 @@ Some notable results are:
 
 `bwd SlidingWindowChillMask(16, 16)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-SlidingWindowChillMask(16, 16)-dim-64-heads-12-batch-64.png">
+<img src="benchmark/results/result-nv-8_0-bwd-medium-SlidingWindowChillMask(16, 16)-dim-128-heads-4-batch-8.png">
+
+`fwd SlidingWindowChillMask(16, 16)`
+
+<img src="benchmark/results/result-nv-8_0-fwd-small-SlidingWindowChillMask(16, 16)-dim-64-heads-12-batch-8.png">
+
+`fwd CausalChillMask()`
+
+<img src="benchmark/results/result-nv-8_0-fwd-medium-CausalChillMask()-dim-128-heads-4-batch-8.png">
 
 `fwd ChunkwiseChillMask(16, 8)`
 
-<img src="benchmark/results/result-nv-9_0-fwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
-
-`fwd PrefixLMChillMask(128)`
-
-<img src="benchmark/results/result-nv-9_0-fwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
+<img src="benchmark/results/result-nv-8_0-fwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-8.png">
 
 
-However, in some cases, further optimization is still needed (especially for the backward pass on H100 hardware).
+However, in some cases, further optimization is still needed:
 
 `bwd CausalChillMask()`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-CausalChillMask()-dim-64-heads-12-batch-64.png">
+<img src="benchmark/results/result-nv-8_0-bwd-small-CausalChillMask()-dim-64-heads-12-batch-8.png">
 
 `bwd ChunkwiseChillMask(16, 8)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-64.png">
+<img src="benchmark/results/result-nv-9_0-bwd-small-ChunkwiseChillMask(16, 8)-dim-64-heads-12-batch-8.png">
 
 `bwd PrefixLMChillMask(128)`
 
-<img src="benchmark/results/result-nv-9_0-bwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-64.png">
+<img src="benchmark/results/result-nv-9_0-bwd-small-PrefixLMChillMask(128)-dim-64-heads-12-batch-8.png">
 
 
 ## Future Improvements
@@ -257,7 +261,6 @@ However, in some cases, further optimization is still needed (especially for the
 - This code has not been profiled in-depth. Therefore, I believe there are simple Triton tricks (like load reordering) that could yield simple speed-ups.
 - Adding support for custom tensors would make ChillAttention almost as powerful as FlexAttention, while still being able to achieve lower overheads when needed.
 - The backward pass kernel is less optimized than the forward pass one, so some performance issues may be present.
-- H100 performance needs to be optimized (e.g., by using Triton's new TMA instructions).
 - Migrate to PyTorch's native Triton operators as soon as they become stable.
 
 ## License
