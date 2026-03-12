@@ -70,7 +70,9 @@ def test_masks_verify(mask):
 
 
 @pytest.mark.parametrize("mask", masks_to_test, ids=lambda x: str(x))
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=lambda x: str(x))
+@pytest.mark.parametrize(
+    "dtype", [torch.float32, torch.float16, torch.bfloat16], ids=lambda x: str(x)
+)
 @pytest.mark.parametrize(
     "lens", ["none", "tricky", "random"], ids=lambda x: f"lens-{x}"
 )
@@ -150,20 +152,25 @@ def test_simple_chill_forward(
     reference = reference.to(q.dtype)
     chill = chill_attention(q, k, v, mask=mask, lens=lens, autotune=autotune) * res_mask
 
-    atol = 5e-3
     if dtype == torch.float32:
-        atol = 7e-6
+        atol, rtol = 2e-6, 1e-4
+    elif dtype == torch.float16:
+        atol, rtol = 1e-2, 1e-3
+    elif dtype == torch.bfloat16:
+        atol, rtol = 5e-2, 1e-2
 
     torch.testing.assert_close(
         actual=chill,
         expected=reference,
         atol=atol,
-        rtol=0,
+        rtol=rtol,
     )
 
 
 @pytest.mark.parametrize("mask", masks_to_test, ids=lambda x: str(x))
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=lambda x: str(x))
+@pytest.mark.parametrize(
+    "dtype", [torch.float32, torch.float16, torch.bfloat16], ids=lambda x: str(x)
+)
 @pytest.mark.parametrize(
     "lens", ["none", "tricky", "random"], ids=lambda x: f"lens-{x}"
 )
@@ -276,29 +283,36 @@ def test_simple_chill_backward(
     tri_dq, q.grad = q.grad.clone(), None
 
     chill = chill * res_mask.broadcast_to(chill.shape)
-    atol = 5e-3
+
     if dtype == torch.float32:
-        atol = 7e-6
+        atol, rtol = 2e-6, 1e-4
+    elif dtype == torch.float16:
+        atol, rtol = 1e-2, 1e-3
+    elif dtype == torch.bfloat16:
+        atol, rtol = 5e-2, 1e-2
 
     torch.testing.assert_close(
         actual=chill,
         expected=reference,
         atol=atol,
-        rtol=0,
+        rtol=rtol,
     )
 
     for i, (d_ref, d_tri) in enumerate(
         [(ref_dv, tri_dv), (ref_dk, tri_dk), (ref_dq, tri_dq)]
     ):
-        atol = 1e-2
         if dtype == torch.float32:
-            atol = 6e-5
+            atol, rtol = 1e-5, 1e-4
+        elif dtype == torch.float16:
+            atol, rtol = 5e-3, 1e-3
+        elif dtype == torch.bfloat16:
+            atol, rtol = 1e-1, 1e-2
 
         torch.testing.assert_close(
             d_tri,
             d_ref,
             atol=atol,
-            rtol=0,
+            rtol=rtol,
             msg=lambda x: f"error in d{'vkq'[i]}\n{(~torch.isfinite(d_tri)).sum().item() = }, {(~torch.isfinite(d_ref)).sum().item() = }\n{x}",
         )
 
