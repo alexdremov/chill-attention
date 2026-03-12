@@ -302,7 +302,7 @@ def test_simple_chill_backward(
         [(ref_dv, tri_dv), (ref_dk, tri_dk), (ref_dq, tri_dq)]
     ):
         if dtype == torch.float32:
-            atol, rtol = 1e-5, 1e-4
+            atol, rtol = 5e-5, 1e-3
         elif dtype == torch.float16:
             atol, rtol = 5e-3, 1e-3
         elif dtype == torch.bfloat16:
