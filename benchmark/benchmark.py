@@ -256,7 +256,7 @@ for mask in masks_to_bench:
                 print("NOT using cudagraphs")
                 bench_fn = triton.testing.do_bench
 
-            ms = bench_fn(bench_target, rep=128, return_mode="mean")
+            ms = bench_fn(bench_target, rep=512, return_mode="mean")
 
         mask_tensor = mask.make_mask(time)
         time_sq = time * time * (mask_tensor.sum().item() / mask_tensor.numel())

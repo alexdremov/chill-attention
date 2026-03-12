@@ -183,10 +183,10 @@ def _chill_attn_fwd(
 
     if SPLIT_LOOPS and HAS_FULL_BLOCKS:
         fn_k_full_range: tl.constexpr = mask_fns[4]
-        
+
         # Explicitly calculate the range of keys that are unmasked for ALL queries in the tile
         full_k_start, full_k_end = fn_k_full_range(q_token_idx, TILE_Q_SIZE, seq_len, mask_args)
-        
+
         # Convert token indices to tile indices
         # A tile is FULL only if its entire range [kv_token_idx, kv_token_idx + TILE_K_SIZE)
         # is within the unmasked range [full_k_start, full_k_end).
@@ -217,7 +217,7 @@ def _chill_attn_fwd(
         kv_indices = kv_token_idx + k_tile_arange
         mask = q_lens_mask & (kv_indices[None, :] < seq_len)
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
-        
+
         if not PRESCALE_QK: qk = qk * softmax_scale
         qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
@@ -274,7 +274,7 @@ def _chill_attn_fwd(
         kv_indices = kv_token_idx + k_tile_arange
         mask = q_lens_mask & (kv_indices[None, :] < seq_len)
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
-        
+
         if not PRESCALE_QK: qk = qk * softmax_scale
         qk = tl.where(mask, qk, tl.cast(-float("inf"), qk.dtype))
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
@@ -1800,7 +1800,7 @@ def chill_attention(
     lens: torch.Tensor | None = None,
     sm_scale: float | None = None,
     return_lse=False,
-    prescale_qk=True,
+    prescale_qk=False,
     precision="ieee",
     autotune=False,
 ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
