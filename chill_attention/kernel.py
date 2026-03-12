@@ -428,12 +428,12 @@ def _chill_attn_bwd(
     if idx < dq_total_tiles:
         head = idx // DQ_TILES_NUM
         tile_id = idx % DQ_TILES_NUM
-        dkv_worker = False
+        dq_worker = True
     else:
         idx -= dq_total_tiles
         head = idx // DK_TILES_NUM
         tile_id = idx % DK_TILES_NUM
-        dkv_worker = True
+        dq_worker = False
 
     if L is not None:
         seq_len = tl.load(L + batch * lens_stride)
@@ -441,44 +441,7 @@ def _chill_attn_bwd(
     else:
         seq_len = T
 
-    if dkv_worker:
-        if head < NUM_KV_HEADS:
-            _chill_attn_bwd_dkdv_inner(
-                Q, K, V, DELTA, LSE, DO, DK, DV,
-                stride_qb, stride_qh, stride_qt, stride_qk,
-                stride_kb, stride_kh, stride_kt, stride_kk,
-                stride_vb, stride_vh, stride_vt, stride_vk,
-                stride_deltab, stride_deltah, stride_deltat,
-                stride_mb, stride_mh, stride_mt,
-                stride_dob, stride_doh, stride_dot, stride_dok,
-                stride_dkb, stride_dkh, stride_dkt, stride_dkk,
-                stride_dvb, stride_dvh, stride_dvt, stride_dvk,
-                batch=batch,
-                head=head,
-                tile_id=tile_id,
-                seq_len=seq_len,
-                T=T,
-                HEAD_DIM=HEAD_DIM,
-                DTYPE=DTYPE,
-                USE_TMA=USE_TMA,
-                INPUT_PRECISION=INPUT_PRECISION,
-                SM_SCALE=SM_SCALE,
-                PRESCALE_QK=PRESCALE_QK,
-                DK_Q_BLOCK_DIVISIBLE=DK_Q_BLOCK_DIVISIBLE,
-                DK_K_BLOCK_DIVISIBLE=DK_K_BLOCK_DIVISIBLE,
-                HAS_FULL_BLOCKS=HAS_FULL_BLOCKS_DK,
-                RCP_LN2=RCP_LN2,
-                GROUP_SIZE=GROUP_SIZE,
-                TILE_DK_Q_SIZE=TILE_DK_Q_SIZE,
-                TILE_DK_K_SIZE=TILE_DK_K_SIZE,
-                PIPELINING=PIPELINING,
-                SPLIT_LOOPS=SPLIT_LOOPS,
-                TENSORS_PRELOAD=TENSORS_PRELOAD,
-                mask_fns=mask_fns,
-                mask_args=mask_args,
-                q_lims_continious=q_lims_continious,
-            )
-    else:
+    if dq_worker:
         _chill_attn_bwd_dq_inner(
             Q, K, V, DELTA, LSE,
             DO, DQ,
@@ -513,6 +476,42 @@ def _chill_attn_bwd(
             mask_fns=mask_fns,
             mask_args=mask_args,
             k_lims_continious=k_lims_continious,
+        )
+    else:
+        _chill_attn_bwd_dkdv_inner(
+            Q, K, V, DELTA, LSE, DO, DK, DV,
+            stride_qb, stride_qh, stride_qt, stride_qk,
+            stride_kb, stride_kh, stride_kt, stride_kk,
+            stride_vb, stride_vh, stride_vt, stride_vk,
+            stride_deltab, stride_deltah, stride_deltat,
+            stride_mb, stride_mh, stride_mt,
+            stride_dob, stride_doh, stride_dot, stride_dok,
+            stride_dkb, stride_dkh, stride_dkt, stride_dkk,
+            stride_dvb, stride_dvh, stride_dvt, stride_dvk,
+            batch=batch,
+            head=head,
+            tile_id=tile_id,
+            seq_len=seq_len,
+            T=T,
+            HEAD_DIM=HEAD_DIM,
+            DTYPE=DTYPE,
+            USE_TMA=USE_TMA,
+            INPUT_PRECISION=INPUT_PRECISION,
+            SM_SCALE=SM_SCALE,
+            PRESCALE_QK=PRESCALE_QK,
+            DK_Q_BLOCK_DIVISIBLE=DK_Q_BLOCK_DIVISIBLE,
+            DK_K_BLOCK_DIVISIBLE=DK_K_BLOCK_DIVISIBLE,
+            HAS_FULL_BLOCKS=HAS_FULL_BLOCKS_DK,
+            RCP_LN2=RCP_LN2,
+            GROUP_SIZE=GROUP_SIZE,
+            TILE_DK_Q_SIZE=TILE_DK_Q_SIZE,
+            TILE_DK_K_SIZE=TILE_DK_K_SIZE,
+            PIPELINING=PIPELINING,
+            SPLIT_LOOPS=SPLIT_LOOPS,
+            TENSORS_PRELOAD=TENSORS_PRELOAD,
+            mask_fns=mask_fns,
+            mask_args=mask_args,
+            q_lims_continious=q_lims_continious,
         )
 
 @triton.jit()
@@ -933,6 +932,8 @@ def _chill_attn_bwd_dkdv_inner(
             q_lims_continious=q_lims_continious,
         )
 
+    dk *= SM_SCALE
+
     dkbatch_head_offset = batch * stride_dkb + kv_head * stride_dkh
     if USE_TMA:
         dk_desc = tl.make_tensor_descriptor(
@@ -1300,8 +1301,6 @@ def _chill_attn_bwd_dkdv(
             Di = delta_desc.load([q_token_idx]) if USE_TMA else tl.load(tl.advance(delta_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
         dsT = pT * (dpT - Di[None, :])
         dk = tl.dot(dsT.to(qT.dtype), q, dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
-
-    dk *= SM_SCALE
     return dk, dv
 # fmt: on
 

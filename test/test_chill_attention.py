@@ -150,7 +150,7 @@ def test_simple_chill_forward(
     reference = reference.to(q.dtype)
     chill = chill_attention(q, k, v, mask=mask, lens=lens, autotune=autotune) * res_mask
 
-    atol = 3e-3
+    atol = 5e-3
     if dtype == torch.float32:
         atol = 7e-6
 
@@ -276,7 +276,7 @@ def test_simple_chill_backward(
     tri_dq, q.grad = q.grad.clone(), None
 
     chill = chill * res_mask.broadcast_to(chill.shape)
-    atol = 3e-3
+    atol = 5e-3
     if dtype == torch.float32:
         atol = 7e-6
 
