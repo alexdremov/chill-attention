@@ -152,8 +152,10 @@ for mask in masks_to_bench:
                 autotune=autotune,
             )
         elif "torch" in provider:
+
             def operation(**kwargs):
                 return _chill_reference_naive(**kwargs)[0]
+
             args = dict(mask=mask, q=q, k=k, v=v, lens=lens)
         elif "flex" in provider:
             flex_mask = mask.make_flex_mask(time)
@@ -166,6 +168,7 @@ for mask in masks_to_bench:
             return operation(**args)
 
         if "compile" in provider:
+
             def fn():
                 return torch.compile(
                     operation, mode="max-autotune-no-cudagraphs" if autotune else None
@@ -211,7 +214,11 @@ for mask in masks_to_bench:
             # Calculate reference gradients and explicitly sever the reference graph
             ref.backward(do)
             ref = ref.detach()
-            dq_ref, dk_ref, dv_ref = q.grad.detach().clone(), k.grad.detach().clone(), v.grad.detach().clone()
+            dq_ref, dk_ref, dv_ref = (
+                q.grad.detach().clone(),
+                k.grad.detach().clone(),
+                v.grad.detach().clone(),
+            )
 
             # Execute correctness check
             actual, dq, dk, dv = fn_back_correctness(fn)
@@ -221,6 +228,7 @@ for mask in masks_to_bench:
             bench_target = functools.partial(fn_back_bench, target_fn=fn)
 
         else:
+
             def fn_forward(target_fn):
                 with torch.no_grad(), torch.inference_mode():
                     return target_fn()
@@ -240,7 +248,9 @@ for mask in masks_to_bench:
         )
 
         if "bwd" in provider and "flex" not in provider:
-            for i, (d_ref, d_tri) in enumerate([(dq_ref, dq), (dk_ref, dk), (dv_ref, dv)]):
+            for i, (d_ref, d_tri) in enumerate(
+                [(dq_ref, dq), (dk_ref, dk), (dv_ref, dv)]
+            ):
                 atol = 1e-2
                 torch.testing.assert_close(
                     d_tri,

@@ -124,6 +124,7 @@ def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
 
     def valid_size(x):
         return x >= 16 and x < 256
+
     additional_q = [TILE_Q_SIZE] + list(filter(valid_size, additional_q))
     additional_k = [TILE_K_SIZE] + list(filter(valid_size, additional_k))
 
@@ -132,15 +133,22 @@ def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
         additional_pipe.append(PIPELINING + 1)
 
     warps = [N_WARPS // 2, N_WARPS * 2]
+
     def valid_size(x):
         return x >= 1 and x <= 4
+
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
     split_loops_options = [True, False] if has_k_full_range else [False]
-    
+
     for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS in itertools.product(
-        additional_q, additional_k, additional_pipe, [True, False], warps, split_loops_options
+        additional_q,
+        additional_k,
+        additional_pipe,
+        [True, False],
+        warps,
+        split_loops_options,
     ):
         results.append(
             triton.Config(
@@ -167,20 +175,28 @@ def _get_backward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
 
     def valid_size(x):
         return x >= 16 and x <= 64
+
     additional_q = [TILE_DQ_Q_SIZE] + list(filter(valid_size, additional_q))
     additional_k = [TILE_DQ_K_SIZE] + list(filter(valid_size, additional_k))
 
     additional_pipe = [PIPELINING]
     warps = [N_WARPS // 2]
+
     def valid_size(x):
         return x >= 1 and x <= 8
+
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
     results = []
     split_loops_options = [True, False] if has_k_full_range else [False]
 
     for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS in itertools.product(
-        additional_q, additional_k, additional_pipe, [True, False], warps, split_loops_options
+        additional_q,
+        additional_k,
+        additional_pipe,
+        [True, False],
+        warps,
+        split_loops_options,
     ):
         results.append(
             triton.Config(

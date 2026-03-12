@@ -979,7 +979,9 @@ class SlidingWindowChillMask(ChillMask):
             tuple: (max(0, q-left_context), q+right_context)
         """
         left_context, right_context = args
-        return tl.maximum(0, q - left_context), tl.minimum(q + right_context, seq_len - 1)
+        return tl.maximum(0, q - left_context), tl.minimum(
+            q + right_context, seq_len - 1
+        )
 
     @staticmethod
     def k_full_range_for_q(

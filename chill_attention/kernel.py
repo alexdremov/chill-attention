@@ -181,7 +181,7 @@ def _chill_attn_fwd(
     full_kv_start_tile = kv_end_tile_idx
     full_kv_end_tile = kv_start_tile_idx
 
-    if SPLIT_LOOPS and HAS_FULL_BLOCKS:
+    if SPLIT_LOOPS and HAS_FULL_BLOCKS and (q_token_idx + TILE_Q_SIZE <= seq_len):
         fn_k_full_range: tl.constexpr = mask_fns[4]
 
         # Explicitly calculate the range of keys that are unmasked for ALL queries in the tile
@@ -533,6 +533,9 @@ def _chill_attn_bwd_dq_inner(
     q_tile_idx = tile_id
     q_token_idx = q_tile_idx * TILE_DQ_Q_SIZE
 
+    if q_token_idx >= seq_len:
+        return
+
     qbatch_head_offset = batch * stride_qb + head * stride_qh
     if USE_TMA:
         q_desc = tl.make_tensor_descriptor(
@@ -637,7 +640,7 @@ def _chill_attn_bwd_dq_inner(
             strides=(stride_kt, stride_kk),
             block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
             offsets=(0, 0),
-            order=(0, 1),
+            order=(1, 0),
         )
 
     vbatch_head_offset = batch * stride_vb + head * stride_vh
@@ -655,7 +658,7 @@ def _chill_attn_bwd_dq_inner(
             strides=(stride_vt, stride_vk),
             block_shape=(TILE_DQ_K_SIZE, HEAD_DIM),
             offsets=(0, 0),
-            order=(0, 1),
+            order=(1, 0),
         )
 
     dq = tl.zeros([TILE_DQ_Q_SIZE, HEAD_DIM], dtype=tl.float32)
@@ -745,6 +748,9 @@ def _chill_attn_bwd_dkdv_inner(
 ):
     kv_tile_idx = tile_id
     kv_token_idx = kv_tile_idx * TILE_DK_K_SIZE
+
+    if kv_token_idx >= seq_len:
+        return
 
     qbatch_head_offset = batch * stride_qb + head * stride_qh
     if USE_TMA:
@@ -1000,7 +1006,7 @@ def _chill_attn_bwd_dq(
     full_kv_start_tile = kv_end_tile_idx
     full_kv_end_tile = kv_start_tile_idx
 
-    if SPLIT_LOOPS and HAS_FULL_BLOCKS:
+    if SPLIT_LOOPS and HAS_FULL_BLOCKS and (q_token_idx + TILE_Q_SIZE <= seq_len):
         fn_k_full_range: tl.constexpr = mask_fns[4]
         full_k_start, full_k_end = fn_k_full_range(q_token_idx, TILE_Q_SIZE, seq_len, mask_args)
         full_kv_start_tile = tl.cdiv(full_k_start, TILE_K_SIZE)
@@ -1147,9 +1153,10 @@ def _chill_attn_bwd_dkdv(
     full_q_start_tile = q_end_tile_idx
     full_q_end_tile = q_start_tile_idx
 
-    if SPLIT_LOOPS and HAS_FULL_BLOCKS:
+    if SPLIT_LOOPS and HAS_FULL_BLOCKS and (kv_token_idx + TILE_K_SIZE <= seq_len):
         fn_q_full_range: tl.constexpr = mask_fns[5]
         full_q_start, full_q_end = fn_q_full_range(kv_token_idx, TILE_K_SIZE, seq_len, mask_args)
+
         full_q_start_tile = tl.cdiv(full_q_start, TILE_Q_SIZE)
         full_q_end_tile = full_q_end // TILE_Q_SIZE
 
@@ -1387,7 +1394,7 @@ def register_chill_mask(mask: ChillMask):
         )
 
         def grid(args):
-            return batch, heads, triton.cdiv(T, args['TILE_Q_SIZE'])
+            return batch, heads, triton.cdiv(T, args["TILE_Q_SIZE"])
 
         args = [
             q,
@@ -1515,8 +1522,10 @@ def register_chill_mask(mask: ChillMask):
         _triton_set_alloc()
 
         delta = torch.empty(o.shape[:-1], dtype=torch.float32, device=o.device)
+
         def grid(args):
-            return batch, heads, triton.cdiv(T, args['TILE_SIZE'])
+            return batch, heads, triton.cdiv(T, args["TILE_SIZE"])
+
         _chill_attn_bwd_precompute[grid](
             o,
             do,
@@ -1564,7 +1573,12 @@ def register_chill_mask(mask: ChillMask):
         )
 
         def grid(args):
-            return batch, heads, triton.cdiv(T, args['TILE_DQ_Q_SIZE']) + triton.cdiv(T, args['TILE_DK_K_SIZE'])
+            return (
+                batch,
+                heads,
+                triton.cdiv(T, args["TILE_DQ_Q_SIZE"])
+                + triton.cdiv(T, args["TILE_DK_K_SIZE"]),
+            )
 
         args = [
             q,
