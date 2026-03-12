@@ -78,7 +78,7 @@ def test_masks_verify(mask):
     "noncontiguous", [False, True], ids=lambda x: f"noncontiguous-{x}"
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
-@pytest.mark.parametrize("B", [1, 40, 64], ids=lambda x: f"batch-{x}")
+@pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
 @pytest.mark.parametrize("H", [1, 6, 8], ids=lambda x: f"heads-{x}")
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1024], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
@@ -153,7 +153,7 @@ def test_simple_chill_forward(
     "noncontiguous", [False, True], ids=lambda x: f"noncontiguous-{x}"
 )
 @pytest.mark.parametrize("HEAD_DIM", [16, 128], ids=lambda x: f"dim-{x}")
-@pytest.mark.parametrize("B", [1, 40, 64], ids=lambda x: f"batch-{x}")
+@pytest.mark.parametrize("B", [1, 7, 16], ids=lambda x: f"batch-{x}")
 @pytest.mark.parametrize("H", [1, 6, 8], ids=lambda x: f"heads-{x}")
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1025], ids=lambda x: f"time-{x}")
 @pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")

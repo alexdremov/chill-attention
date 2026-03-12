@@ -107,6 +107,61 @@ class ChillMask(ABC):
         ...
 
     @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        """
+        Determine the range of key indices that are fully unmasked for an entire query tile.
+        A key k is in this range if for all q in [qb, qb + TILE_Q), (q, k) is unmasked.
+
+        Args:
+            qb (int): Query tile start index
+            TILE_Q (tl.constexpr): Query tile size
+            seq_len: (tl.tensor): Len of the current sequence
+            args: Constants used to parameterize the mask (tuple from __init__)
+
+        Returns:
+            tuple[tl.tensor, tl.tensor]: (start_key_idx, end_key_idx) exclusive range [start, end)
+        """
+        return 0, 0
+
+    @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        """
+        Determine the range of query indices that are fully unmasked for an entire key tile.
+        A query q is in this range if for all k in [kb, kb + TILE_K), (q, k) is unmasked.
+
+        Args:
+            kb (int): Key tile start index
+            TILE_K (tl.constexpr): Key tile size
+            seq_len: (tl.tensor): Len of the current sequence
+            args: Constants used to parameterize the mask (tuple from __init__)
+
+        Returns:
+            tuple[tl.tensor, tl.tensor]: (start_query_idx, end_query_idx) exclusive range [start, end)
+        """
+        return 0, 0
+
+    @staticmethod
+    def has_k_full_range():
+        """
+        Whether the mask supports explicit unmasked range calculation.
+        If True, k_full_range_for_q will be used for loop splitting.
+
+        Returns:
+            bool: True if unmasked ranges are supported
+        """
+        return False
+
+    @staticmethod
     def q_lims_continious():
         """
         Whether query limits for keys form a continuous range.
@@ -191,6 +246,16 @@ class ChillMask(ABC):
     def is_full_block_jit(self):
         """Cached JIT-compiled version of is_full_block function."""
         return triton.jit()(self.is_full_block)
+
+    @cached_static_property
+    def k_full_range_for_q_jit(self):
+        """Cached JIT-compiled version of k_full_range_for_q function."""
+        return triton.jit()(self.k_full_range_for_q)
+
+    @cached_static_property
+    def q_full_range_for_k_jit(self):
+        """Cached JIT-compiled version of q_full_range_for_k function."""
+        return triton.jit()(self.q_full_range_for_k)
 
     @staticmethod
     @triton.jit
@@ -384,12 +449,69 @@ class ChillMask(ABC):
         """
         return None
 
-    def plot(self, max_pos, draw_full_blocks: bool | int | tuple[int, int] = False):
+    @staticmethod
+    @triton.jit
+    def _full_ranges_infer(
+        TILE_Q: tl.constexpr,
+        seq_len: int,
+        result,
+        result_stride_i: int,
+        result_stride_pos: int,
+        args,
+        rule,
+    ):
+        """
+        JIT-compiled function to infer the full ranges for each query tile.
+        """
+        i = tl.program_id(axis=0)
+        start, end = rule(i * TILE_Q, TILE_Q, seq_len, args)
+
+        # result is (num_tiles, 2)
+        res_ptr = result + i * result_stride_i
+        tl.store(res_ptr, start.to(tl.int32))
+        tl.store(res_ptr + result_stride_pos, end.to(tl.int32))
+
+    def _calc_full_ranges(self, max_pos, TILE_Q):
+        """
+        Calculate the full unmasked ranges for all query tiles.
+
+        Args:
+            max_pos (int): Maximum position
+            TILE_Q (int): Query tile size
+
+        Returns:
+            torch.Tensor: Tensor of ranges with shape (num_tiles, 2)
+        """
+        num_tiles = triton.cdiv(max_pos, TILE_Q)
+        res = torch.zeros((num_tiles, 2), device="cuda", dtype=torch.int32)
+        self._full_ranges_infer[(num_tiles,)](
+            TILE_Q=TILE_Q,
+            seq_len=max_pos,
+            result=res,
+            result_stride_i=res.stride(0),
+            result_stride_pos=res.stride(1),
+            args=self.constargs,
+            rule=self.k_full_range_for_q_jit,
+        )
+        return res
+
+    def plot(
+        self,
+        max_pos,
+        draw_full_blocks: bool | int | tuple[int, int] = False,
+        plot_block_types: bool = False,
+        TILE_Q: int = 32,
+        TILE_K: int = 32,
+    ):
         """
         Create a visualization of the mask pattern.
 
         Args:
             max_pos (int): Maximum position to visualize
+            draw_full_blocks: Whether to draw full blocks for specific tile sizes
+            plot_block_types: Whether to visualize full ranges used for loop splitting
+            TILE_Q: Query tile size for block visualization
+            TILE_K: Key tile size for block visualization
 
         Returns:
             matplotlib.figure.Figure: Figure with mask visualization
@@ -496,6 +618,44 @@ class ChillMask(ABC):
                             )
                             ax.add_patch(rectangle)
 
+        if plot_block_types and self.has_k_full_range():
+            full_ranges = self._calc_full_ranges(max_pos, TILE_Q).cpu()
+            for i in range(len(full_ranges)):
+                qb = i * TILE_Q
+                k_start, k_end = full_ranges[i]
+                ks, ke = k_start.item(), k_end.item()
+
+                if ke > ks:
+                    # Draw full range background on axes[0] (q on y, k on x)
+                    rect0 = matplotlib.patches.Rectangle(
+                        (ks - 0.5, qb - 0.5),
+                        ke - ks,
+                        TILE_Q,
+                        color="yellow",
+                        alpha=0.6,
+                        zorder=4,
+                        label="Full Range (Hot Loop)" if i == 0 else None,
+                        ec="red",
+                        ls="-",
+                        lw=1.5,
+                    )
+                    axes[0].add_patch(rect0)
+
+                    # Draw full range background on axes[1] (k on y, q on x)
+                    rect1 = matplotlib.patches.Rectangle(
+                        (qb - 0.5, ks - 0.5),
+                        TILE_Q,
+                        ke - ks,
+                        color="yellow",
+                        alpha=0.6,
+                        zorder=4,
+                        ec="red",
+                        ls="-",
+                        lw=1.5,
+                    )
+                    axes[1].add_patch(rect1)
+            axes[0].legend()
+
         axes[1].legend()
         return fig
 
@@ -580,6 +740,30 @@ class ChillMask(ABC):
                         f"{q = }, {k = }, {q_tile_size = }, {k_tile_size = },\n{tile = }"
                     )
 
+        if self.has_k_full_range():
+            for TILE_Q_SIZE in [16, 32, 64]:
+                full_ranges = self._calc_full_ranges(max_pos, TILE_Q_SIZE).cpu()
+                for i in range(len(full_ranges)):
+                    qb = i * TILE_Q_SIZE
+                    k_start, k_end = full_ranges[i]
+
+                    # Valid sequence length limit
+                    q_end = min(qb + TILE_Q_SIZE, max_pos)
+                    if q_end <= qb:
+                        continue
+
+                    # Range [k_start, k_end) must be fully unmasked for all q in [qb, q_end)
+                    if k_end > k_start:
+                        # Ensure k indices are within sequence length
+                        k_end_clipped = min(k_end.item(), max_pos)
+                        if k_end_clipped > k_start:
+                            k_range_mask = mask[qb:q_end, k_start:k_end_clipped]
+                            assert k_range_mask.all(), (
+                                f"k_full_range_for_q returned range [{k_start}, {k_end}) "
+                                f"for q tile [{qb}, {q_end}), but some tokens are masked.\n"
+                                f"Mask slice:\n{k_range_mask}"
+                            )
+
 
 class FullChillMask(ChillMask):
     """
@@ -603,14 +787,36 @@ class FullChillMask(ChillMask):
         return tl.full((q.shape[0], k.shape[0]), True, dtype=tl.int1)
 
     @staticmethod
-    def q_range_for_k(k: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def q_range_for_k(k, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """All queries can attend to any key."""
-        return 0, seq_len - 1
+        return tl.zeros_like(k), tl.zeros_like(k) + (seq_len - 1)
 
     @staticmethod
-    def k_range_for_q(q: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def k_range_for_q(q, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """Any query can attend to all keys."""
-        return 0, seq_len - 1
+        return tl.zeros_like(q), tl.zeros_like(q) + (seq_len - 1)
+
+    @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        return 0, seq_len
+
+    @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        return 0, seq_len
+
+    @staticmethod
+    def has_k_full_range():
+        return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -659,14 +865,37 @@ class CausalChillMask(ChillMask):
         return q[:, None] >= k[None, :]
 
     @staticmethod
-    def q_range_for_k(k: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def q_range_for_k(k, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """A key at position k can be attended to by queries at position k or later."""
-        return k, seq_len - 1
+        return k, tl.zeros_like(k) + (seq_len - 1)
 
     @staticmethod
-    def k_range_for_q(q: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def k_range_for_q(q, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """A query at position q can attend to keys at position q or earlier."""
-        return 0, q
+        return tl.zeros_like(q), q
+
+    @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        return 0, qb + 1
+
+    @staticmethod
+    def q_full_range_for_k(
+        kb: int,
+        TILE_K: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        start = tl.maximum(0, kb + TILE_K - 1)
+        return start, seq_len
+
+    @staticmethod
+    def has_k_full_range():
+        return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -722,13 +951,14 @@ class SlidingWindowChillMask(ChillMask):
         """
         left_context, right_context = args[0], args[1]
 
-        diff = q[:, None] - k[None, :]
-        return ((diff <= left_context) & (diff >= 0)) | (
-            (diff >= -right_context) & (diff <= 0)
+        # Vectorized threshold-based comparison
+        # Isolation of terms helps Triton LICM
+        return (k[None, :] <= q[:, None] + right_context) & (
+            k[None, :] >= q[:, None] - left_context
         )
 
     @staticmethod
-    def q_range_for_k(k: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def q_range_for_k(k, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """
         For a key at position k, determine which queries can attend to it.
 
@@ -736,10 +966,12 @@ class SlidingWindowChillMask(ChillMask):
             tuple: max(0, k - right_context), min(k + left_context, seq_len - 1)
         """
         left_context, right_context = args
-        return max(0, k - right_context), min(k + left_context, seq_len - 1)
+        return tl.maximum(0, k - right_context), tl.minimum(
+            k + left_context, seq_len - 1
+        )
 
     @staticmethod
-    def k_range_for_q(q: int, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
+    def k_range_for_q(q, seq_len: tl.tensor, args) -> tuple[tl.tensor, tl.tensor]:
         """
         For a query at position q, determine which keys it can attend to.
 
@@ -747,7 +979,26 @@ class SlidingWindowChillMask(ChillMask):
             tuple: (max(0, q-left_context), q+right_context)
         """
         left_context, right_context = args
-        return max(0, q - left_context), min(q + right_context, seq_len - 1)
+        return tl.maximum(0, q - left_context), tl.minimum(
+            q + right_context, seq_len - 1
+        )
+
+    @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        left_context, right_context = args
+        start = tl.maximum(0, qb + TILE_Q - 1 - left_context)
+        end = tl.minimum(seq_len, qb + right_context + 1)
+        # Ensure start <= end
+        return start, tl.maximum(start, end)
+
+    @staticmethod
+    def has_k_full_range():
+        return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -830,13 +1081,13 @@ class ChunkwiseChillMask(ChillMask):
             tl.tensor: Boolean tensor with True for positions in allowed chunks
         """
         context_size, back_contexts = args
-        q, k = q // context_size, k // context_size
-        blocks_diff = q[:, None] - k[None, :]
+        q_block, k_block = q // context_size, k // context_size
+        blocks_diff = q_block[:, None] - k_block[None, :]
         return (blocks_diff >= 0) & (blocks_diff <= back_contexts)
 
     @staticmethod
     def q_range_for_k(
-        k: int,
+        k,
         seq_len: tl.tensor,
         args,
     ) -> tuple[tl.tensor, tl.tensor]:
@@ -850,11 +1101,11 @@ class ChunkwiseChillMask(ChillMask):
         kv_tile_context = k // context_size
         q_start_idx = kv_tile_context * context_size
         q_end_tile_idx = (kv_tile_context + back_contexts + 1) * context_size - 1
-        return q_start_idx, min(q_end_tile_idx, seq_len - 1)
+        return q_start_idx, tl.minimum(q_end_tile_idx, seq_len - 1)
 
     @staticmethod
     def k_range_for_q(
-        q: int,
+        q,
         seq_len: tl.tensor,
         args,
     ) -> tuple[tl.tensor, tl.tensor]:
@@ -866,10 +1117,35 @@ class ChunkwiseChillMask(ChillMask):
         """
         context_size, back_contexts = args
         q_tile_context = q // context_size
-        kv_start_idx = max(0, ((q_tile_context - back_contexts) * context_size))
+        kv_start_idx = tl.maximum(0, ((q_tile_context - back_contexts) * context_size))
         kv_end_tile_idx = (q_tile_context + 1) * context_size - 1
 
-        return kv_start_idx, min(kv_end_tile_idx, seq_len - 1)
+        return kv_start_idx, tl.minimum(kv_end_tile_idx, seq_len - 1)
+
+    @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        context_size, back_contexts = args
+        q_block_min = qb // context_size
+        q_block_max = (qb + TILE_Q - 1) // context_size
+
+        # Intersection of [k_low(q), k_high(q)]
+        # k_high(q) = (q // context_size + 1) * context_size - 1
+        # k_low(q) = (q // context_size - back_contexts) * context_size
+        k_end = (q_block_min + 1) * context_size
+        k_start = (q_block_max - back_contexts) * context_size
+
+        start = tl.maximum(0, k_start)
+        end = tl.minimum(seq_len, k_end)
+        return start, tl.maximum(start, end)
+
+    @staticmethod
+    def has_k_full_range():
+        return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -959,7 +1235,7 @@ class PrefixLMChillMask(ChillMask):
 
     @staticmethod
     def q_range_for_k(
-        k: int,
+        k,
         seq_len: tl.tensor,
         args,
     ) -> tuple[tl.tensor, tl.tensor]:
@@ -970,14 +1246,12 @@ class PrefixLMChillMask(ChillMask):
             tuple: Range of query indices that can attend to key position k
         """
         prefix_size = args[0]
-        left_border = k
-        if k < prefix_size:
-            left_border = 0
-        return left_border, seq_len - 1
+        left_border = tl.where(k < prefix_size, 0, k)
+        return left_border, tl.zeros_like(k) + (seq_len - 1)
 
     @staticmethod
     def k_range_for_q(
-        q: int,
+        q,
         seq_len: tl.tensor,
         args,
     ) -> tuple[tl.tensor, tl.tensor]:
@@ -988,8 +1262,26 @@ class PrefixLMChillMask(ChillMask):
             tuple: Range of key indices that query position q can attend to
         """
         prefix_size = args[0]
-        right_window = max(q, prefix_size - 1)
-        return 0, min(right_window, seq_len - 1)
+        right_window = tl.maximum(q, prefix_size - 1)
+        return tl.zeros_like(q), tl.minimum(right_window, seq_len - 1)
+
+    @staticmethod
+    def k_full_range_for_q(
+        qb: int,
+        TILE_Q: tl.constexpr,
+        seq_len: tl.tensor,
+        args,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        prefix_size = args[0]
+        # In prefix, everything is unmasked up to prefix_size
+        # Outside prefix, it is causal.
+        # Intersection: [0, max(prefix_size, qb + 1)]
+        end = tl.maximum(prefix_size, qb + 1)
+        return 0, tl.minimum(end, seq_len)
+
+    @staticmethod
+    def has_k_full_range():
+        return True
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""

@@ -1,4 +1,3 @@
-
 import torch
 import triton
 import triton.language as tl
@@ -193,19 +192,26 @@ def _get_min_max_tiles(
         tuple: (start_tile, end_tile) indicating the range of tiles to process
     """
     if continious:
-        i_max = min(i + TILE_SIZE_IN, seq_len) - 1
+        # Fast path for monotonic/continuous masks
+        i_max = tl.minimum(i + TILE_SIZE_IN, seq_len) - 1
         left_start, _ = fn_lims(i, seq_len=seq_len, args=mask_args)
         _, right_end = fn_lims(i_max, seq_len=seq_len, args=mask_args)
 
         start = left_start
         end = right_end
     else:
-        start = seq_len - 1
-        end = 0
-        for i in i + tl.arange(0, TILE_SIZE_IN):
-            new_start, new_end = fn_lims(i, seq_len=seq_len, args=mask_args)
-            start = min(start, new_start)
-            end = max(end, new_end)
+        # Vectorized path for complex masks: find the global min/max range across the tile
+        indices = i + tl.arange(0, TILE_SIZE_IN)
+        starts, ends = fn_lims(indices, seq_len=seq_len, args=mask_args)
+
+        # Mask out-of-bounds tokens to avoid them affecting the tile range
+        valid_mask = indices < seq_len
+        starts = tl.where(valid_mask, starts, seq_len)
+        ends = tl.where(valid_mask, ends, -1)
+
+        start = tl.min(starts)
+        end = tl.max(ends)
+
     start_tile = start // TILE_SIZE_OUT
     end_tile = tl.cdiv(end + 1, TILE_SIZE_OUT)
     return start_tile, end_tile

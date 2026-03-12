@@ -9,11 +9,11 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 
 - ⚡ **High-Performance Kernels**
 
-  A Triton-based sparse flash attention implementation with custom masks that outperforms **PyTorch SDPA attention** and is comparable to or better than **FlexAttention**, depending on the use case.
+  A Triton-based sparse flash attention implementation with custom masks that outperforms naive **PyTorch SDPA attention** and is faster than **FlexAttention** or comparable.
 
 - 🎭 **Flexible Masking Patterns**
 
-  Supports custom-defined attention masks. Examples include `FullChillMask`, `CausalChillMask`, `SlidingWindowChillMask`, `ChunkwiseChillMask`, and `PrefixLMChillMask`. **Define your own mask with just three simple methods.**
+  Supports custom-defined attention masks. Examples include `FullChillMask`, `CausalChillMask`, `SlidingWindowChillMask`, `ChunkwiseChillMask`, and `PrefixLMChillMask`. **Define your own mask with just a few simple methods.**
 
 - 🏎️ **Kernel Tuning & Triton TMA**
 
@@ -27,6 +27,10 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 - 🚀 **PyTorch 2 Integration**
 
   Supports `torch.compile` since the kernels are defined as custom PyTorch operators.
+
+- 📦 **Pure Triton, Single File**
+
+  The entire kernel implementation is contained in a single-file Triton code. Easy experimenting and customization.
 
 ## Why So Chill?
 
@@ -53,7 +57,7 @@ uv pip install -e .
 
 - Python ≥ 3.11, < 3.13
 
-- PyTorch >= 2.7.0
+- PyTorch >= 2.10.0
 
 - CUDA-compatible GPU
 
