@@ -17,7 +17,7 @@ sys.path.insert(0, f"{os.path.dirname(os.path.realpath(__file__))}/..")
 
 from chill_attention import PrefixLMChillMask
 from chill_attention.autotune import _get_default_config_bwd, _get_default_config_fwd
-from chill_attention.kernel import _chill_attn_bwd, _chill_attn_fwd
+from chill_attention.chill_attention.chill import _chill_attn_bwd, _chill_attn_fwd
 from chill_attention.utils import strides
 
 mask = PrefixLMChillMask(256)

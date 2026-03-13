@@ -190,7 +190,7 @@ class ChillMask(ABC):
     @staticmethod
     def is_guaranteed_safe():
         """
-        Whether every query is guaranteed to attend to at least one key.
+        Whether every query is guaranteed to attend to at least one key in any tile.
         If True, we can skip safety checks for masked-out rows.
 
         Returns:
@@ -1021,7 +1021,7 @@ class SlidingWindowChillMask(ChillMask):
 
     @staticmethod
     def is_guaranteed_safe():
-        return True
+        return False
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -1172,7 +1172,7 @@ class ChunkwiseChillMask(ChillMask):
 
     @staticmethod
     def is_guaranteed_safe():
-        return True
+        return False
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
