@@ -51,11 +51,15 @@ class cached_static_property(object):
         return value
 
 
-# fmt: off
 def _get_precompute_kernel():
     kernel = _chill_attn_bwd_precompute
-    
+
     if os.environ.get("TRITON_INTERPRET", "0") != "1":
+        kernel = triton.heuristics(
+            dict(
+                BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
+            )
+        )(kernel)
         kernel = triton.autotune(
             configs=[
                 triton.Config(
@@ -71,12 +75,8 @@ def _get_precompute_kernel():
             ],
             key=["HEAD_DIM", "DTYPE", "TIME_BUCKET"],
         )(kernel)
-        
-        return triton.heuristics(
-            dict(
-                BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
-            )
-        )(kernel)
+
+        return kernel
     else:
         # Default config for interpreter, avoiding autotune
         return triton.heuristics(
@@ -88,6 +88,8 @@ def _get_precompute_kernel():
             )
         )(kernel)
 
+
+# fmt: off
 @triton.jit
 def _chill_attn_bwd_precompute(
     O: tl.tensor,
@@ -213,6 +215,7 @@ def _chill_attn_bwd_precompute(
             tl.store(res_ptr, res)
         else:
             tl.store(res_ptr, res, boundary_check=(0,))
+# fmt: on
 
 
 @triton.jit
@@ -270,8 +273,10 @@ def _get_min_max_tiles(
 
 
 def alloc_fn(size: int, alignment: int, stream: None | int):
-    device = "cuda" if torch.cuda.is_available() else (
-        "mps" if torch.backends.mps.is_available() else "cpu"
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
     )
     return torch.empty(size, device=device, dtype=torch.int8)
 
