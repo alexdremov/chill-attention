@@ -1,3 +1,6 @@
+import os
+from functools import cache
+
 import torch
 import triton
 import triton.language as tl
@@ -47,27 +50,46 @@ class cached_static_property(object):
         return value
 
 
-# fmt: off
-@triton.autotune(
-    configs=[
-        triton.Config(
+@cache
+def _get_precompute_kernel():
+    kernel = _chill_attn_bwd_precompute
+
+    if os.environ.get("TRITON_INTERPRET", "0") != "1":
+        kernel = triton.heuristics(
             dict(
-                TILE_SIZE=tile,
-            ),
-            num_warps=num_warps,
-            num_stages=stages,
-        )
-        for num_warps in [2, 4, 8]
-        for tile in [32, 64, 128]
-        for stages in [1, 2, 3]
-    ],
-    key=["HEAD_DIM", "DTYPE", "TIME_BUCKET"],
-)
-@triton.heuristics(
-    dict(
-        BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
-    )
-)
+                BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
+            )
+        )(kernel)
+        kernel = triton.autotune(
+            configs=[
+                triton.Config(
+                    dict(
+                        TILE_SIZE=tile,
+                    ),
+                    num_warps=num_warps,
+                    num_stages=stages,
+                )
+                for num_warps in [2, 4, 8]
+                for tile in [32, 64, 128]
+                for stages in [1, 2, 3]
+            ],
+            key=["HEAD_DIM", "DTYPE", "TIME_BUCKET"],
+        )(kernel)
+
+        return kernel
+    else:
+        # Default config for interpreter, avoiding autotune
+        return triton.heuristics(
+            dict(
+                TILE_SIZE=lambda _: 64,
+                BLOCK_DIVISIBLE=lambda args: args["T"] % 64 == 0,
+                num_warps=lambda _: 4,
+                num_stages=lambda _: 1,
+            )
+        )(kernel)
+
+
+# fmt: off
 @triton.jit
 def _chill_attn_bwd_precompute(
     O: tl.tensor,
@@ -193,6 +215,7 @@ def _chill_attn_bwd_precompute(
             tl.store(res_ptr, res)
         else:
             tl.store(res_ptr, res, boundary_check=(0,))
+# fmt: on
 
 
 @triton.jit
@@ -250,7 +273,12 @@ def _get_min_max_tiles(
 
 
 def alloc_fn(size: int, alignment: int, stream: None | int):
-    return torch.empty(size, device="cuda", dtype=torch.int8)
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
+    return torch.empty(size, device=device, dtype=torch.int8)
 
 
 def _triton_set_alloc():

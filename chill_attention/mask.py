@@ -390,9 +390,14 @@ class ChillMask(ABC):
         chunks = triton.cdiv(max_pos, chunk_size)
         total_pos = chunk_size * chunks
 
+        device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else ("mps" if torch.backends.mps.is_available() else "cpu")
+        )
         mask = torch.empty(
             (total_pos, total_pos),
-            device="cuda",
+            device=device,
             dtype=torch.bool,
         )
         self._mask_infer[(chunks, chunks)](
@@ -421,9 +426,15 @@ class ChillMask(ABC):
         chunks = triton.cdiv(max_pos, chunk_size)
         total_pos = chunk_size * chunks
 
+        device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else ("mps" if torch.backends.mps.is_available() else "cpu")
+        )
+
         lims = torch.zeros(
             (total_pos, 2),
-            device="cuda",
+            device=device,
             dtype=torch.int32,
         )
         self._limits_infer[(chunks, 1)](
@@ -505,7 +516,12 @@ class ChillMask(ABC):
             torch.Tensor: Tensor of ranges with shape (num_tiles, 2)
         """
         num_tiles = triton.cdiv(max_pos, TILE_Q)
-        res = torch.zeros((num_tiles, 2), device="cuda", dtype=torch.int32)
+        device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else ("mps" if torch.backends.mps.is_available() else "cpu")
+        )
+        res = torch.zeros((num_tiles, 2), device=device, dtype=torch.int32)
         self._full_ranges_infer[(num_tiles,)](
             TILE_Q=TILE_Q,
             seq_len=max_pos,

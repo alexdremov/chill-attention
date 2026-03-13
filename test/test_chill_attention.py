@@ -28,6 +28,12 @@ masks_to_test = [
     PrefixLMChillMask(10),
 ]
 
+best_device = (
+    "cuda"
+    if torch.cuda.is_available()
+    else ("mps" if torch.backends.mps.is_available() else "cpu")
+)
+
 
 def make_lens(lens, B, T):
     if lens == "none":
@@ -43,24 +49,30 @@ def make_lens(lens, B, T):
             max(T // 4, 1),
         ]
         lens = torch.tensor(
-            np.random.choice(tricky_lens, B), dtype=torch.int32, device="cuda"
+            np.random.choice(tricky_lens, B), dtype=torch.int32, device=best_device
         ).contiguous()
     else:
         lens = torch.randint(
-            1, T + 1, (B,), dtype=torch.int32, device="cuda"
+            1, T + 1, (B,), dtype=torch.int32, device=best_device
         ).contiguous()
     return lens
 
 
 @pytest.fixture(autouse=True)
 def run_around_tests(request):
-    devices = list(range(torch.cuda.device_count()))
-    torch.cuda.set_device(devices[int(hash(request.node.callspec.id)) % len(devices)])
+    num_devices = torch.cuda.device_count()
+    if num_devices > 0:
+        devices = list(range(num_devices))
+        torch.cuda.set_device(
+            devices[int(hash(request.node.callspec.id)) % len(devices)]
+        )
+
     torch._dynamo.reset()
 
     torch.manual_seed(20)
     torch.set_float32_matmul_precision("highest")
-    torch.cuda.empty_cache()
+    if num_devices > 0:
+        torch.cuda.empty_cache()
     yield
 
 
@@ -121,7 +133,7 @@ def test_simple_chill_forward(
     q = torch.testing.make_tensor(
         (B, H, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -129,7 +141,7 @@ def test_simple_chill_forward(
     k = torch.testing.make_tensor(
         (B, H_KV, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -137,7 +149,7 @@ def test_simple_chill_forward(
     v = torch.testing.make_tensor(
         (B, H_KV, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -225,7 +237,7 @@ def test_simple_chill_backward(
     q = torch.testing.make_tensor(
         (B, H, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -233,7 +245,7 @@ def test_simple_chill_backward(
     k = torch.testing.make_tensor(
         (B, H_KV, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -241,7 +253,7 @@ def test_simple_chill_backward(
     v = torch.testing.make_tensor(
         (B, H_KV, T, HEAD_DIM),
         dtype=dtype,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
@@ -257,7 +269,7 @@ def test_simple_chill_backward(
     dout = torch.testing.make_tensor(
         (B, H, T, HEAD_DIM),
         dtype=torch.float32,
-        device="cuda",
+        device=best_device,
         noncontiguous=noncontiguous,
         low=-0.1,
         high=0.1,
