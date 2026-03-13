@@ -1,4 +1,4 @@
-from .kernel import (
+from .chill import (
     _chill_reference_naive,
     chill_attention,
     register_chill_mask,

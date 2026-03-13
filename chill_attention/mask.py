@@ -162,6 +162,17 @@ class ChillMask(ABC):
         return False
 
     @staticmethod
+    def has_q_full_range():
+        """
+        Whether the mask supports explicit unmasked range calculation.
+        If True, q_full_range_for_k will be used for loop splitting.
+
+        Returns:
+            bool: True if unmasked ranges are supported
+        """
+        return False
+
+    @staticmethod
     def q_lims_continious():
         """
         Whether query limits for keys form a continuous range.
@@ -190,7 +201,7 @@ class ChillMask(ABC):
     @staticmethod
     def is_guaranteed_safe():
         """
-        Whether every query is guaranteed to attend to at least one key.
+        Whether every query is guaranteed to attend to at least one key in any valid tile.
         If True, we can skip safety checks for masked-out rows.
 
         Returns:
@@ -830,6 +841,10 @@ class FullChillMask(ChillMask):
         return True
 
     @staticmethod
+    def has_q_full_range():
+        return True
+
+    @staticmethod
     def is_guaranteed_safe():
         return True
 
@@ -910,6 +925,10 @@ class CausalChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
+        return True
+
+    @staticmethod
+    def has_q_full_range():
         return True
 
     @staticmethod
@@ -1020,8 +1039,12 @@ class SlidingWindowChillMask(ChillMask):
         return True
 
     @staticmethod
-    def is_guaranteed_safe():
+    def has_q_full_range():
         return True
+
+    @staticmethod
+    def is_guaranteed_safe():
+        return False
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -1171,8 +1194,12 @@ class ChunkwiseChillMask(ChillMask):
         return True
 
     @staticmethod
-    def is_guaranteed_safe():
+    def has_q_full_range():
         return True
+
+    @staticmethod
+    def is_guaranteed_safe():
+        return False
 
     def make_flex_mask(self, max_pos) -> BlockMask | None:
         """Create a BlockMask for FlexAttention."""
@@ -1308,6 +1335,10 @@ class PrefixLMChillMask(ChillMask):
 
     @staticmethod
     def has_k_full_range():
+        return True
+
+    @staticmethod
+    def has_q_full_range():
         return True
 
     @staticmethod

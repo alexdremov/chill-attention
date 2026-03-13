@@ -15,9 +15,10 @@ from tqdm.auto import tqdm, trange
 sys.path.insert(0, f"{os.path.dirname(os.path.realpath(__file__))}/..")
 
 
-from chill_attention import PrefixLMChillMask
 from chill_attention.autotune import _get_default_config_bwd, _get_default_config_fwd
-from chill_attention.kernel import _chill_attn_bwd, _chill_attn_fwd
+from chill_attention.chill_bwd import _chill_attn_bwd
+from chill_attention.chill_fwd import _chill_attn_fwd
+from chill_attention.mask import PrefixLMChillMask
 from chill_attention.utils import strides
 
 mask = PrefixLMChillMask(256)

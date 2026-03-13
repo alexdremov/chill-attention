@@ -47,6 +47,7 @@ class cached_static_property(object):
         return value
 
 
+# fmt: off
 @triton.autotune(
     configs=[
         triton.Config(
@@ -72,23 +73,16 @@ def _chill_attn_bwd_precompute(
     O: tl.tensor,
     DO: tl.tensor,
     RES: tl.tensor,
-    stride_ob: int,
-    stride_oh: int,
-    stride_ot: int,
-    stride_ok: int,  #
-    stride_dob: int,
-    stride_doh: int,
-    stride_dot: int,
-    stride_dok: int,  #
-    stride_rb: int,
-    stride_rh: int,
-    stride_rt: int,
+    stride_ob: int, stride_oh: int, stride_ot: int, stride_ok:  tl.constexpr,  #
+    stride_dob: int, stride_doh: int, stride_dot: int, stride_dok:  tl.constexpr,  #
+    stride_rb: int, stride_rh: int, stride_rt:  tl.constexpr,
     T: int,
-    TIME_BUCKET: int,  #
+    TIME_BUCKET: tl.constexpr,  #
     HEAD_DIM: tl.constexpr,
     DTYPE: tl.constexpr,  #
     TILE_SIZE: tl.constexpr,
     BLOCK_DIVISIBLE: tl.constexpr,  #
+    USE_TMA: tl.constexpr,  #
 ):
     """
     Precompute operation for attention backward pass.
@@ -115,52 +109,90 @@ def _chill_attn_bwd_precompute(
     token_idx = tile * TILE_SIZE
 
     obatch_head_offset = batch * stride_ob + head * stride_oh
-    o_tile_ptr = tl.make_block_ptr(
-        base=O + obatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_ot, stride_ok),
-        offsets=(token_idx, 0),
-        block_shape=(TILE_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-
-    dobatch_head_offset = batch * stride_dob + head * stride_doh
-    do_tile_ptr = tl.make_block_ptr(
-        base=DO + dobatch_head_offset,
-        shape=(T, HEAD_DIM),
-        strides=(stride_dot, stride_dok),
-        offsets=(token_idx, 0),
-        block_shape=(TILE_SIZE, HEAD_DIM),
-        order=(1, 0),
-    )
-
-    if BLOCK_DIVISIBLE:
-        o_tile = tl.load(
-            o_tile_ptr,
-        )
-        do_tile = tl.load(
-            do_tile_ptr,
+    if USE_TMA:
+        o_tile_ptr = tl.make_tensor_descriptor(
+            base=O + obatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_ot, stride_ok),
+            block_shape=(TILE_SIZE, HEAD_DIM),
         )
     else:
-        o_tile = tl.load(o_tile_ptr, boundary_check=(0,))
-        do_tile = tl.load(do_tile_ptr, boundary_check=(0,))
+        o_tile_ptr = tl.make_block_ptr(
+            base=O + obatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_ot, stride_ok),
+            offsets=(token_idx, 0),
+            block_shape=(TILE_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+
+    dobatch_head_offset = batch * stride_dob + head * stride_doh
+    if USE_TMA:
+        do_tile_ptr = tl.make_tensor_descriptor(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            block_shape=(TILE_SIZE, HEAD_DIM),
+        )
+    else:
+        do_tile_ptr = tl.make_block_ptr(
+            base=DO + dobatch_head_offset,
+            shape=(T, HEAD_DIM),
+            strides=(stride_dot, stride_dok),
+            offsets=(token_idx, 0),
+            block_shape=(TILE_SIZE, HEAD_DIM),
+            order=(1, 0),
+        )
+
+    if USE_TMA:
+        o_tile = tl.load_tensor_descriptor(
+            o_tile_ptr,
+            offsets=(token_idx, 0),
+        )
+        do_tile = tl.load_tensor_descriptor(
+            do_tile_ptr,
+            offsets=(token_idx, 0),
+        )
+    else:
+        if BLOCK_DIVISIBLE:
+            o_tile = tl.load(
+                o_tile_ptr,
+            )
+            do_tile = tl.load(
+                do_tile_ptr,
+            )
+        else:
+            o_tile = tl.load(o_tile_ptr, boundary_check=(0,))
+            do_tile = tl.load(do_tile_ptr, boundary_check=(0,))
 
     res = tl.sum(o_tile.to(tl.float32) * do_tile.to(tl.float32), 1)
 
     rbatch_head_offset = batch * stride_rb + head * stride_rh
-    res_ptr = tl.make_block_ptr(
-        base=RES + rbatch_head_offset,
-        shape=(T,),
-        strides=(stride_rt,),
-        offsets=(token_idx,),
-        block_shape=(TILE_SIZE,),
-        order=(0,),
-    )
-
-    if BLOCK_DIVISIBLE:
-        tl.store(res_ptr, res)
+    if USE_TMA:
+        res_ptr = tl.make_tensor_descriptor(
+            base=RES + rbatch_head_offset,
+            shape=(T,),
+            strides=(stride_rt,),
+            block_shape=(TILE_SIZE,),
+        )
+        res_ptr.store(
+            offsets=(token_idx,),
+            value=res,
+        )
     else:
-        tl.store(res_ptr, res, boundary_check=(0,))
+        res_ptr = tl.make_block_ptr(
+            base=RES + rbatch_head_offset,
+            shape=(T,),
+            strides=(stride_rt,),
+            offsets=(token_idx,),
+            block_shape=(TILE_SIZE,),
+            order=(0,),
+        )
+
+        if BLOCK_DIVISIBLE:
+            tl.store(res_ptr, res)
+        else:
+            tl.store(res_ptr, res, boundary_check=(0,))
 
 
 @triton.jit
