@@ -253,6 +253,18 @@ def register_chill_mask(mask: ChillMask):
         def grid(args):
             return batch, heads, triton.cdiv(T, args["TILE_SIZE"])
 
+        use_precompute_tma = (
+            o.stride(-1) == 1
+            and o.stride(0) % 16 == 0
+            and o.stride(1) % 16 == 0
+            and do.stride(-1) == 1
+            and do.stride(0) % 16 == 0
+            and do.stride(1) % 16 == 0
+            and delta.stride(-1) == 1
+            and delta.stride(0) % 16 == 0
+            and delta.stride(1) % 16 == 0
+        )
+
         _chill_attn_bwd_precompute[grid](
             o,
             do,
@@ -264,6 +276,7 @@ def register_chill_mask(mask: ChillMask):
             HEAD_DIM=HEAD_DIM,
             DTYPE=q.dtype,
             TIME_BUCKET=triton.next_power_of_2(T),
+            USE_TMA=use_precompute_tma,
         )
 
         DQ = torch.zeros_like(q, memory_format=torch.contiguous_format)
