@@ -9,11 +9,12 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 
 - ⚡ **High-Performance Kernels**
 
-  A Triton-based sparse flash attention implementation with custom masks that outperforms naive **PyTorch SDPA attention** and is faster than **FlexAttention** or comparable.
+  A Triton-based sparse flash attention implementation with custom masks that outperforms naive **PyTorch SDPA attention and is faster than FlexAttention** or comparable.
 
 - 🎭 **Flexible Masking Patterns**
 
   Supports custom-defined attention masks. Examples include `FullChillMask`, `CausalChillMask`, `SlidingWindowChillMask`, `ChunkwiseChillMask`, and `PrefixLMChillMask`. **Define your own mask with just a few simple methods.**
+  Your mask rules make it directly into kernel code!
 
 - 🏎️ **Kernel Tuning & Triton TMA**
 
@@ -28,9 +29,9 @@ Chill Attention provides an efficient sparse flash attention operator with optim
 
   Supports `torch.compile` since the kernels are defined as custom PyTorch operators.
 
-- 📦 **Pure Triton, Single File**
+- 📦 **Pure Triton**
 
-  The entire kernel implementation is contained in a single-file Triton code. Easy experimenting and customization.
+  The entire kernel implementation is contained in a few pure Triton code. Easy experimenting and customization.
 
 ## Why So Chill?
 
@@ -122,7 +123,7 @@ prefix_mask = PrefixLMChillMask(
 
 ## Creating Your Own Mask
 
-Creating a custom mask can be as simple as implementing three methods. To do this, you need to define:
+Creating a custom mask can be as simple as implementing three methods. To do this, you need to define at least:
 
 - **mask**: The mask for the provided query (q) and key (k) indices.
 - **q_range_for_k**: The range of q positions for a specified k position.
@@ -173,7 +174,9 @@ class SlidingWindowChillMask(ChillMask):
 
 Additional methods to optimize performance are also available:
 - `q_lims_continuous`, `k_lims_continuous` — Optimize the computation of tiling ranges (True by default).
+- `k_full_range_for_q`, `q_full_range_for_k`, `has_k_full_range`, `has_q_full_range` — Determine the range of query indices that are fully unmasked for an entire key/query tile.
 - `has_full_blocks`, `is_full_block` — Optimize performance for fully unmasked blocks.
+- `is_guaranteed_safe` — Whether every query is guaranteed to attend to at least one key in any valid tile.
 
 ### Verification
 
@@ -220,7 +223,7 @@ If your mask structure is parameterized purely by query (q) and key (k) indices,
 
 ## Benchmarking
 
-The following plots show a comparison with **FlexAttention** for several attention masks. **PyTorch SDPA** does not take advantage of mask sparsity and therefore performs poorly (not shown). The code for these benchmarks is available in `benchmark/benchmark.py`. There are cases where the kernel performs worse than FlexAttention, but I believe this can be improved through kernel optimizations, primarily for the backward pass.
+The following plots show a comparison with **FlexAttention** for several attention masks. **PyTorch SDPA** does not take advantage of mask sparsity and therefore performs poorly (not shown). The code for these benchmarks is available in `benchmark/benchmark.py`. There are cases where the kernel performs a bit worse than FlexAttention, but I believe this can be improved through kernel optimizations, primarily for the backward pass. Results benchmarked with CUDA graphs, and with `autotune=True` and `torch.compile` enabled.
 
 Some notable results are:
 
