@@ -594,6 +594,7 @@ def _chill_attn_bwd_dkdv_inner(
             SPLIT_LOOPS_KV=SPLIT_LOOPS_KV,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
             ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
+            HEAD_DIM=HEAD_DIM,
             USE_TMA=USE_TMA,
             mask_fns=mask_fns,
             mask_args=mask_args,
@@ -739,7 +740,13 @@ def _chill_attn_bwd_dq(
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
 
         if not TENSORS_PRELOAD:
-            v = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                v = v_desc.load([kv_token_idx, 0])
+            else:
+                v = tl.load(
+                    tl.advance(v_desc, (kv_token_idx, 0)),
+                    boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ()
+                )
 
         p = tl.where(mask, p, 0.0)
         dp = tl.dot(do.to(v.dtype), v.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
@@ -763,7 +770,12 @@ def _chill_attn_bwd_dq(
         p = tl.math.exp2(qk - m_safe)
         # NO MASKING HERE
         if not TENSORS_PRELOAD:
-            v = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)))
+            if USE_TMA:
+                v = v_desc.load([kv_token_idx, 0])
+            else:
+                v = tl.load(
+                    tl.advance(v_desc, (kv_token_idx, 0))
+                )
 
         dp = tl.dot(do.to(v.dtype), v.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         ds = p * (dp - di[:, None])
@@ -790,7 +802,13 @@ def _chill_attn_bwd_dq(
         mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
 
         if not TENSORS_PRELOAD:
-            v = v_desc.load([kv_token_idx, 0]) if USE_TMA else tl.load(tl.advance(v_desc, (kv_token_idx, 0)), boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                v = v_desc.load([kv_token_idx, 0])
+            else:
+                v = tl.load(
+                    tl.advance(v_desc, (kv_token_idx, 0)),
+                    boundary_check=(0,) if not K_BLOCK_DIVISIBLE else ()
+                )
 
         p = tl.where(mask, p, 0.0)
         dp = tl.dot(do.to(v.dtype), v.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
@@ -821,6 +839,7 @@ def _chill_attn_bwd_dkdv(
     PRESCALE_QK: tl.constexpr,
     SPLIT_LOOPS_KV: tl.constexpr,
     TENSORS_PRELOAD: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
     USE_TMA: tl.constexpr,
     mask_fns,
     mask_args,
@@ -870,11 +889,11 @@ def _chill_attn_bwd_dkdv(
     for q_tile_idx in tl.range(q_start_tile_idx, full_q_start_tile, num_stages=PIPELINING):
         q_token_idx = q_tile_idx * TILE_Q_SIZE
         if USE_TMA:
-            q = q_desc.load([q_head, q_token_idx, 0])[0, :, :]
+            q = q_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
             if TENSORS_PRELOAD:
-                m = lse_desc.load([q_head, q_token_idx])[0, :]
-                do = do_desc.load([q_head, q_token_idx, 0])[0, :, :]
-                Di = delta_desc.load([q_head, q_token_idx])[0, :]
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
         else:
             q = tl.load(tl.advance(q_desc, (q_token_idx, 0)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
             if TENSORS_PRELOAD:
@@ -886,7 +905,13 @@ def _chill_attn_bwd_dkdv(
         if not PRESCALE_QK: qkT *= softmax_scale_ln2
 
         if not TENSORS_PRELOAD:
-            m = lse_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+            else:
+                m = tl.load(
+                    tl.advance(lse_desc, (q_token_idx,)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
 
         m_safe = m
         if not ROWS_GUARANTEED_SAFE:
@@ -899,11 +924,23 @@ def _chill_attn_bwd_dkdv(
         pT = tl.where(mask, pT, 0.0)
 
         if not TENSORS_PRELOAD:
-            do = do_desc.load([q_head, q_token_idx, 0])[0, :, :] if USE_TMA else tl.load(tl.advance(do_desc, (q_token_idx, 0)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+            else:
+                do = tl.load(
+                    tl.advance(do_desc, (q_token_idx, 0)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
         dv = tl.dot(pT.to(do.dtype), do, dv, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         dpT = tl.dot(v.to(do.dtype), do.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not TENSORS_PRELOAD:
-            Di = delta_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(delta_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE, ))
+            else:
+                Di = tl.load(
+                    tl.advance(delta_desc, (q_token_idx,)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
         dsT = pT * (dpT - Di[None, :])
         dk = tl.dot(dsT.to(q.dtype), q, dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
 
@@ -911,11 +948,11 @@ def _chill_attn_bwd_dkdv(
     for q_tile_idx in tl.range(full_q_start_tile, full_q_end_tile, num_stages=PIPELINING):
         q_token_idx = q_tile_idx * TILE_Q_SIZE
         if USE_TMA:
-            q = q_desc.load([q_head, q_token_idx, 0])[0, :, :]
+            q = q_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
             if TENSORS_PRELOAD:
-                m = lse_desc.load([q_head, q_token_idx])[0, :]
-                do = do_desc.load([q_head, q_token_idx, 0])[0, :, :]
-                Di = delta_desc.load([q_head, q_token_idx])[0, :]
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
         else:
             q = tl.load(tl.advance(q_desc, (q_token_idx, 0)))
             if TENSORS_PRELOAD:
@@ -927,7 +964,10 @@ def _chill_attn_bwd_dkdv(
         if not PRESCALE_QK: qkT *= softmax_scale_ln2
 
         if not TENSORS_PRELOAD:
-            m = lse_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)))
+            if USE_TMA:
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+            else:
+                m = tl.load(tl.advance(lse_desc, (q_token_idx,)))
 
         m_safe = m
         if not ROWS_GUARANTEED_SAFE:
@@ -936,11 +976,17 @@ def _chill_attn_bwd_dkdv(
         pT = tl.math.exp2(qkT - m_safe[None, :])
         # NO MASKING HERE
         if not TENSORS_PRELOAD:
-            do = do_desc.load([q_head, q_token_idx, 0])[0, :, :] if USE_TMA else tl.load(tl.advance(do_desc, (q_token_idx, 0)))
+            if USE_TMA:
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+            else:
+                do = tl.load(tl.advance(do_desc, (q_token_idx, 0)))
         dv = tl.dot(pT.to(do.dtype), do, dv, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         dpT = tl.dot(v.to(do.dtype), do.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not TENSORS_PRELOAD:
-            Di = delta_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(delta_desc, (q_token_idx,)))
+            if USE_TMA:
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+            else:
+                Di = tl.load(tl.advance(delta_desc, (q_token_idx,)))
         dsT = pT * (dpT - Di[None, :])
         dk = tl.dot(dsT.to(q.dtype), q, dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
 
@@ -948,11 +994,11 @@ def _chill_attn_bwd_dkdv(
     for q_tile_idx in tl.range(full_q_end_tile, q_end_tile_idx, num_stages=PIPELINING):
         q_token_idx = q_tile_idx * TILE_Q_SIZE
         if USE_TMA:
-            q = q_desc.load([q_head, q_token_idx, 0])[0, :, :]
+            q = q_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
             if TENSORS_PRELOAD:
-                m = lse_desc.load([q_head, q_token_idx])[0, :]
-                do = do_desc.load([q_head, q_token_idx, 0])[0, :, :]
-                Di = delta_desc.load([q_head, q_token_idx])[0, :]
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
         else:
             q = tl.load(tl.advance(q_desc, (q_token_idx, 0)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
             if TENSORS_PRELOAD:
@@ -964,7 +1010,13 @@ def _chill_attn_bwd_dkdv(
         if not PRESCALE_QK: qkT *= softmax_scale_ln2
 
         if not TENSORS_PRELOAD:
-            m = lse_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(lse_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                m = lse_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+            else:
+                m = tl.load(
+                    tl.advance(lse_desc, (q_token_idx,)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
 
         m_safe = m
         if not ROWS_GUARANTEED_SAFE:
@@ -977,11 +1029,23 @@ def _chill_attn_bwd_dkdv(
         pT = tl.where(mask, pT, 0.0)
 
         if not TENSORS_PRELOAD:
-            do = do_desc.load([q_head, q_token_idx, 0])[0, :, :] if USE_TMA else tl.load(tl.advance(do_desc, (q_token_idx, 0)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                do = do_desc.load([q_head, q_token_idx, 0]).reshape((TILE_Q_SIZE, HEAD_DIM))
+            else:
+                do = tl.load(
+                    tl.advance(do_desc, (q_token_idx, 0)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
         dv = tl.dot(pT.to(do.dtype), do, dv, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         dpT = tl.dot(v.to(do.dtype), do.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         if not TENSORS_PRELOAD:
-            Di = delta_desc.load([q_head, q_token_idx])[0, :] if USE_TMA else tl.load(tl.advance(delta_desc, (q_token_idx,)), boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ())
+            if USE_TMA:
+                Di = delta_desc.load([q_head, q_token_idx]).reshape((TILE_Q_SIZE,))
+            else:
+                Di = tl.load(
+                    tl.advance(delta_desc, (q_token_idx,)),
+                    boundary_check=(0,) if not Q_BLOCK_DIVISIBLE else ()
+                )
         dsT = pT * (dpT - Di[None, :])
         dk = tl.dot(dsT.to(q.dtype), q, dk, input_precision=INPUT_PRECISION, out_dtype=tl.float32)
     return dk, dv
