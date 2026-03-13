@@ -161,6 +161,7 @@ def _chill_attn_bwd(
             SPLIT_LOOPS_KV=SPLIT_LOOPS_KV,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
             ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
+            NUM_KV_HEADS=NUM_KV_HEADS,
             mask_fns=mask_fns,
             mask_args=mask_args,
             q_lims_continious=q_lims_continious,
@@ -419,6 +420,7 @@ def _chill_attn_bwd_dkdv_inner(
     SPLIT_LOOPS_KV: tl.constexpr,  #
     TENSORS_PRELOAD: tl.constexpr,
     ROWS_GUARANTEED_SAFE: tl.constexpr,  #
+    NUM_KV_HEADS: tl.constexpr,  #
     mask_fns,
     mask_args,
     q_lims_continious: tl.constexpr,  #
