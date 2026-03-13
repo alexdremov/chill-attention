@@ -28,7 +28,7 @@ def _chill_attn_fwd(
     stride_ob: int, stride_oh: int, stride_ot: int, stride_ok: tl.constexpr, #
     lens_stride: int,
     T: int,  #
-    TIME_BUCKET:  int,  #
+    TIME_BUCKET: tl.constexpr,  #
     HEAD_DIM: tl.constexpr,  #
     INPUT_PRECISION: tl.constexpr,  #
     SM_SCALE: tl.constexpr,  #

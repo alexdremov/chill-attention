@@ -375,7 +375,10 @@ def register_chill_mask(mask: ChillMask):
         if autotune:
             if (HEAD_DIM, q.dtype) not in autotunes_bwd:
                 configs = _get_backward_autotune_configs(
-                    HEAD_DIM, q.dtype, has_k_full_range=mask.has_k_full_range()
+                    HEAD_DIM,
+                    q.dtype,
+                    has_k_full_range=mask.has_k_full_range(),
+                    has_q_full_range=mask.has_q_full_range(),
                 )
                 configs = _prune_notfitting_configs(configs, kernel, args, kwargs, grid)
                 logger.info(
@@ -407,6 +410,7 @@ def register_chill_mask(mask: ChillMask):
                     TENSORS_PRELOAD=lambda _: TENSORS_PRELOAD,
                     PIPELINING=lambda _: PIPELINING,
                     SPLIT_LOOPS=lambda _: mask.has_k_full_range(),
+                    SPLIT_LOOPS_KV=lambda _: mask.has_q_full_range(),
                     num_warps=lambda _: N_WARPS,
                     num_stages=lambda _: PIPELINING,
                 )

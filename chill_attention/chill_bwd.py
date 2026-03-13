@@ -39,7 +39,7 @@ def _chill_attn_bwd(
     stride_dvb: int, stride_dvh: int, stride_dvt: int, stride_dvk: tl.constexpr,  #
     lens_stride: int,
     T: int,  #
-    TIME_BUCKET: int,  #
+    TIME_BUCKET: tl.constexpr,  #
     DQ_TILES_NUM: int,  #
     DK_TILES_NUM: int,  #
     HEAD_DIM: tl.constexpr,  #
@@ -60,6 +60,7 @@ def _chill_attn_bwd(
     TILE_DK_Q_SIZE: tl.constexpr, TILE_DK_K_SIZE: tl.constexpr,  #
     PIPELINING: tl.constexpr,  #
     SPLIT_LOOPS: tl.constexpr,  #
+    SPLIT_LOOPS_KV: tl.constexpr,  #
     TENSORS_PRELOAD: tl.constexpr,
     USE_TMA: tl.constexpr,
     mask_fns,
@@ -157,7 +158,7 @@ def _chill_attn_bwd(
             TILE_DK_Q_SIZE=TILE_DK_Q_SIZE,
             TILE_DK_K_SIZE=TILE_DK_K_SIZE,
             PIPELINING=PIPELINING,
-            SPLIT_LOOPS=SPLIT_LOOPS,
+            SPLIT_LOOPS_KV=SPLIT_LOOPS_KV,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
             ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
             mask_fns=mask_fns,
@@ -415,7 +416,7 @@ def _chill_attn_bwd_dkdv_inner(
     TILE_DK_Q_SIZE: tl.constexpr,  #
     TILE_DK_K_SIZE: tl.constexpr,  #
     PIPELINING: tl.constexpr,  #
-    SPLIT_LOOPS: tl.constexpr,  #
+    SPLIT_LOOPS_KV: tl.constexpr,  #
     TENSORS_PRELOAD: tl.constexpr,
     ROWS_GUARANTEED_SAFE: tl.constexpr,  #
     mask_fns,
@@ -581,7 +582,7 @@ def _chill_attn_bwd_dkdv_inner(
             RCP_LN2=RCP_LN2,
             SM_SCALE=SM_SCALE,
             PRESCALE_QK=PRESCALE_QK,
-            SPLIT_LOOPS=SPLIT_LOOPS,
+            SPLIT_LOOPS_KV=SPLIT_LOOPS_KV,
             TENSORS_PRELOAD=TENSORS_PRELOAD,
             ROWS_GUARANTEED_SAFE=ROWS_GUARANTEED_SAFE,
             USE_TMA=USE_TMA,
@@ -808,7 +809,7 @@ def _chill_attn_bwd_dkdv(
     RCP_LN2: tl.constexpr,
     SM_SCALE: tl.constexpr,
     PRESCALE_QK: tl.constexpr,
-    SPLIT_LOOPS: tl.constexpr,
+    SPLIT_LOOPS_KV: tl.constexpr,
     TENSORS_PRELOAD: tl.constexpr,
     USE_TMA: tl.constexpr,
     mask_fns,
@@ -842,7 +843,7 @@ def _chill_attn_bwd_dkdv(
     full_q_start_tile = q_end_tile_idx
     full_q_end_tile = q_start_tile_idx
 
-    if SPLIT_LOOPS and HAS_FULL_BLOCKS and (kv_token_idx + TILE_K_SIZE <= seq_len):
+    if SPLIT_LOOPS_KV and HAS_FULL_BLOCKS and (kv_token_idx + TILE_K_SIZE <= seq_len):
         fn_q_full_range: tl.constexpr = mask_fns[5]
         full_q_start, full_q_end = fn_q_full_range(kv_token_idx, TILE_K_SIZE, seq_len, mask_args)
 

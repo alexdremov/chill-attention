@@ -84,7 +84,7 @@ def _chill_attn_bwd_precompute(
     stride_rh: int,
     stride_rt: int,
     T: int,
-    TIME_BUCKET: int,  #
+    TIME_BUCKET: tl.constexpr,  #
     HEAD_DIM: tl.constexpr,
     DTYPE: tl.constexpr,  #
     TILE_SIZE: tl.constexpr,
