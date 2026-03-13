@@ -1,7 +1,5 @@
-from functools import cache
-import itertools
-import logging
 import os
+from functools import cache
 
 import torch
 import triton
@@ -50,6 +48,7 @@ class cached_static_property(object):
         value = self.func(typ)
         setattr(typ, self.func.__name__, value)
         return value
+
 
 @cache
 def _get_precompute_kernel():
