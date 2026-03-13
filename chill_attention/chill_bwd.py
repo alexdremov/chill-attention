@@ -380,9 +380,9 @@ def _chill_attn_bwd_dq_inner(
             order=(1, 0),
         )
         if DQ_Q_BLOCK_DIVISIBLE:
-            tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty))
+            tl.store(dq_tile_ptr, dq.to(q.dtype))
         else:
-            tl.store(dq_tile_ptr, dq.to(dq_tile_ptr.type.element_ty), boundary_check=(0,))
+            tl.store(dq_tile_ptr, dq.to(q.dtype), boundary_check=(0,))
 
 
 @triton.jit
@@ -622,9 +622,9 @@ def _chill_attn_bwd_dkdv_inner(
             order=(1, 0),
         )
         if DK_K_BLOCK_DIVISIBLE:
-            tl.store(dk_desc, dk.to(dk_desc.type.element_ty))
+            tl.store(dk_desc, dk.to(k.dtype))
         else:
-            tl.store(dk_desc, dk.to(dk_desc.type.element_ty), boundary_check=(0,))
+            tl.store(dk_desc, dk.to(k.dtype), boundary_check=(0,))
 
 
     dvbatch_head_offset = batch * stride_dvb + kv_head * stride_dvh
@@ -646,9 +646,9 @@ def _chill_attn_bwd_dkdv_inner(
             order=(1, 0),
         )
         if DK_K_BLOCK_DIVISIBLE:
-            tl.store(dv_desc, dv.to(dv_desc.type.element_ty))
+            tl.store(dv_desc, dv.to(v.dtype))
         else:
-            tl.store(dv_desc, dv.to(dv_desc.type.element_ty), boundary_check=(0,))
+            tl.store(dv_desc, dv.to(v.dtype), boundary_check=(0,))
 
 
 @triton.jit

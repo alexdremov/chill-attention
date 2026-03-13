@@ -315,12 +315,12 @@ def _chill_attn_fwd(
         if Q_BLOCK_DIVISIBLE:
             tl.store(
                 o_desc,
-                acc.to(o_desc.type.element_ty),
+                acc.to(q_tile.type),
             )
         else:
             tl.store(
                 o_desc,
-                acc.to(o_desc.type.element_ty),
+                acc.to(q_tile.type),
                 boundary_check=(0,),
             )
 

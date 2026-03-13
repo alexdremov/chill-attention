@@ -1,5 +1,6 @@
 import itertools
 import logging
+import os
 
 import torch
 import triton
@@ -86,12 +87,21 @@ _h100_bwd_default_config = {
 }
 
 
+def _get_cuda_capability():
+    if os.environ.get("TRITON_INTERPRET", "0") == "1":
+        return (0, 0)
+    if not torch.cuda.is_available():
+        return (0, 0)
+    return torch.cuda.get_device_capability()
+
+
 def _get_default_config_fwd(head_dim, dtype) -> tuple[int, int, int, int, bool]:
     default_config = (16, 16, 4, 1, True)
+    capability = _get_cuda_capability()
 
-    if torch.cuda.get_device_capability() >= (9, 0):  # H100
+    if capability >= (9, 0):  # H100
         default_config = _h100_fwd_default_config.get((dtype, head_dim), default_config)
-    elif torch.cuda.get_device_capability() >= (8, 0):  # A100
+    elif capability >= (8, 0):  # A100
         default_config = _a100_fwd_default_config.get((dtype, head_dim), default_config)
 
     return default_config
@@ -99,10 +109,11 @@ def _get_default_config_fwd(head_dim, dtype) -> tuple[int, int, int, int, bool]:
 
 def _get_default_config_bwd(head_dim, dtype) -> tuple[int, int, int, int, bool]:
     default_config = (16, 16, 4, 1, False)
+    capability = _get_cuda_capability()
 
-    if torch.cuda.get_device_capability() >= (9, 0):  # H100
+    if capability >= (9, 0):  # H100
         default_config = _h100_bwd_default_config.get((dtype, head_dim), default_config)
-    elif torch.cuda.get_device_capability() >= (8, 0):  # A100
+    elif capability >= (8, 0):  # A100
         default_config = _a100_bwd_default_config.get((dtype, head_dim), default_config)
 
     return default_config
