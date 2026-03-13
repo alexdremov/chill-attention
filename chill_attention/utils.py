@@ -47,6 +47,7 @@ class cached_static_property(object):
         return value
 
 
+# fmt: off
 @triton.autotune(
     configs=[
         triton.Config(
@@ -72,17 +73,9 @@ def _chill_attn_bwd_precompute(
     O: tl.tensor,
     DO: tl.tensor,
     RES: tl.tensor,
-    stride_ob: int,
-    stride_oh: int,
-    stride_ot: int,
-    stride_ok: int,  #
-    stride_dob: int,
-    stride_doh: int,
-    stride_dot: int,
-    stride_dok: int,  #
-    stride_rb: int,
-    stride_rh: int,
-    stride_rt: int,
+    stride_ob: int, stride_oh: int, stride_ot: int, stride_ok:  tl.constexpr,  #
+    stride_dob: int, stride_doh: int, stride_dot: int, stride_dok:  tl.constexpr,  #
+    stride_rb: int, stride_rh: int, stride_rt:  tl.constexpr,
     T: int,
     TIME_BUCKET: tl.constexpr,  #
     HEAD_DIM: tl.constexpr,
