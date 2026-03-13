@@ -1,3 +1,7 @@
+import itertools
+import logging
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -48,26 +52,42 @@ class cached_static_property(object):
 
 
 # fmt: off
-@triton.autotune(
-    configs=[
-        triton.Config(
+def _get_precompute_kernel():
+    kernel = _chill_attn_bwd_precompute
+    
+    if os.environ.get("TRITON_INTERPRET", "0") != "1":
+        kernel = triton.autotune(
+            configs=[
+                triton.Config(
+                    dict(
+                        TILE_SIZE=tile,
+                    ),
+                    num_warps=num_warps,
+                    num_stages=stages,
+                )
+                for num_warps in [2, 4, 8]
+                for tile in [32, 64, 128]
+                for stages in [1, 2, 3]
+            ],
+            key=["HEAD_DIM", "DTYPE", "TIME_BUCKET"],
+        )(kernel)
+        
+        return triton.heuristics(
             dict(
-                TILE_SIZE=tile,
-            ),
-            num_warps=num_warps,
-            num_stages=stages,
-        )
-        for num_warps in [2, 4, 8]
-        for tile in [32, 64, 128]
-        for stages in [1, 2, 3]
-    ],
-    key=["HEAD_DIM", "DTYPE", "TIME_BUCKET"],
-)
-@triton.heuristics(
-    dict(
-        BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
-    )
-)
+                BLOCK_DIVISIBLE=lambda args: args["T"] % args["TILE_SIZE"] == 0,
+            )
+        )(kernel)
+    else:
+        # Default config for interpreter, avoiding autotune
+        return triton.heuristics(
+            dict(
+                TILE_SIZE=lambda _: 64,
+                BLOCK_DIVISIBLE=lambda args: args["T"] % 64 == 0,
+                num_warps=lambda _: 4,
+                num_stages=lambda _: 1,
+            )
+        )(kernel)
+
 @triton.jit
 def _chill_attn_bwd_precompute(
     O: tl.tensor,

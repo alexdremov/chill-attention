@@ -19,6 +19,7 @@ from .chill_fwd import _chill_attn_fwd
 from .mask import ChillMask
 from .utils import (
     _chill_attn_bwd_precompute,
+    _get_precompute_kernel,
     _triton_set_alloc,
     strides,
 )
@@ -274,7 +275,7 @@ def register_chill_mask(mask: ChillMask):
             and delta.stride(1) % 16 == 0
         )
 
-        _chill_attn_bwd_precompute[grid](
+        _get_precompute_kernel()[grid](
             o,
             do,
             delta,
