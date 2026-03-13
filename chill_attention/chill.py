@@ -1,4 +1,5 @@
 import logging
+import os
 import typing
 
 import torch
@@ -55,8 +56,14 @@ def register_chill_mask(mask: ChillMask):
     autotunes = dict()
     autotunes_bwd = dict()
 
+    device_types = ("cuda",)
+    if os.environ.get("TRITON_INTERPRET", "0") == "1":
+        device_types = ("cpu", "cuda", "mps")
+
     @torch.library.custom_op(
-        f"chill_attention::forward{mask_name}", mutates_args=(), device_types=("cuda",)
+        f"chill_attention::forward{mask_name}",
+        mutates_args=(),
+        device_types=device_types,
     )
     def attention_forward_adapter(
         q: torch.Tensor,
@@ -225,7 +232,9 @@ def register_chill_mask(mask: ChillMask):
         )
 
     @torch.library.custom_op(
-        f"chill_attention::backward{mask_name}", mutates_args=(), device_types=("cuda",)
+        f"chill_attention::backward{mask_name}",
+        mutates_args=(),
+        device_types=device_types,
     )
     def attention_backward_adapter(
         q: torch.Tensor,
@@ -519,7 +528,7 @@ def _chill_reference_naive(
 
     if lens is not None:
         key_padding_mask = (
-            torch.arange(T, device="cuda").unsqueeze(0) < lens.unsqueeze(-1)
+            torch.arange(T, device=q.device).unsqueeze(0) < lens.unsqueeze(-1)
         ).unsqueeze(-1)
         key_padding_mask_ref = key_padding_mask
         key_padding_mask = key_padding_mask & key_padding_mask.transpose(-1, -2)

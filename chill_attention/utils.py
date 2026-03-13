@@ -250,7 +250,10 @@ def _get_min_max_tiles(
 
 
 def alloc_fn(size: int, alignment: int, stream: None | int):
-    return torch.empty(size, device="cuda", dtype=torch.int8)
+    device = "cuda" if torch.cuda.is_available() else (
+        "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    return torch.empty(size, device=device, dtype=torch.int8)
 
 
 def _triton_set_alloc():
