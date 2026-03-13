@@ -1,3 +1,4 @@
+from functools import cache
 import itertools
 import logging
 import os
@@ -50,7 +51,7 @@ class cached_static_property(object):
         setattr(typ, self.func.__name__, value)
         return value
 
-
+@cache
 def _get_precompute_kernel():
     kernel = _chill_attn_bwd_precompute
 
