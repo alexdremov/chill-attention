@@ -381,7 +381,7 @@ def _chill_attn_bwd_dkdv(
         pT = tl.math.exp2(qkT - m_safe[None, :])
         q_tile_indices = q_token_idx + tile_q_arange
         mask = kv_lens_mask & (q_tile_indices[None, :] < seq_len)
-        if DO_SPLIT or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
+        if DO_SPLIT or not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
         pT = tl.where(mask, pT, 0.0)
 
@@ -488,7 +488,7 @@ def _chill_attn_bwd_dkdv(
             pT = tl.math.exp2(qkT - m_safe[None, :])
             q_tile_indices = q_token_idx + tile_q_arange
             mask = kv_lens_mask & (q_tile_indices[None, :] < seq_len)
-            if DO_SPLIT or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
+            if DO_SPLIT or not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
                 mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args).T
             pT = tl.where(mask, pT, 0.0)
 

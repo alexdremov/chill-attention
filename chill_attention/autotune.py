@@ -185,8 +185,8 @@ def _get_backward_autotune_configs(
         _get_default_config_bwd(head_dim, dtype=dtype)
     )
     # Reduced additional sizes
-    additional_q = [TILE_DQ_Q_SIZE * 2, TILE_DQ_Q_SIZE // 2]
-    additional_k = [TILE_DQ_K_SIZE * 2, TILE_DQ_K_SIZE // 2]
+    additional_q = [TILE_DQ_Q_SIZE * 2, TILE_DQ_Q_SIZE // 2, TILE_DQ_Q_SIZE // 4]
+    additional_k = [TILE_DQ_K_SIZE * 2, TILE_DQ_K_SIZE // 2, TILE_DQ_K_SIZE // 4]
 
     def valid_size(x):
         return x >= 16 and x <= 64
@@ -294,8 +294,8 @@ def _prune_notfitting_configs(configs, kernel, args, kwargs, grid):
     if not valid_configs:
         return []
 
-    # Quantile-based filtering: keep bottom 25% of spills
+    # Quantile-based filtering: keep bottom 50% of spills
     spills = [s for _, s in valid_configs]
-    threshold = np.quantile(spills, 0.25)
+    threshold = np.quantile(spills, 0.5)
 
     return [c for c, s in valid_configs if s <= threshold]

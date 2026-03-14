@@ -208,7 +208,7 @@ def _chill_attn_fwd(
 
         qk = tl.dot(q_tile, k_tile.trans(), input_precision=INPUT_PRECISION, out_dtype=tl.float32)
         kv_indices = kv_token_idx + k_tile_arange
-        if DO_SPLIT or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
+        if DO_SPLIT or not HAS_FULL_BLOCKS or not is_full_block(q_token_idx, kv_token_idx, TILE_Q_SIZE, TILE_K_SIZE, seq_len, mask_args):
             mask = kv_indices[None, :] < seq_len
             mask &= fn_mask(q_tile_indices, kv_indices, seq_len=seq_len, args=mask_args)
         else:
