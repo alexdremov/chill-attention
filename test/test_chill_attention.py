@@ -99,7 +99,7 @@ def test_masks_verify(mask):
     ids=lambda x: f"H{x[0]}-HKV{x[1]}",
 )
 @pytest.mark.parametrize("T", [1, 10, 16, 500, 512], ids=lambda x: f"time-{x}")
-@pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
+@pytest.mark.parametrize("autotune", [True, False], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_forward(
     mask,
     dtype,
@@ -125,7 +125,7 @@ def test_simple_chill_forward(
         in {
             1,
         }
-        and T in {10, 1025}
+        and T in {1, 512}
     ):
         pytest.skip("reduced set for autotune")
         return
@@ -197,7 +197,7 @@ def test_simple_chill_forward(
     ids=lambda x: f"H{x[0]}-HKV{x[1]}",
 )
 @pytest.mark.parametrize("T", [1, 10, 16, 800, 1025], ids=lambda x: f"time-{x}")
-@pytest.mark.parametrize("autotune", [False], ids=lambda x: f"autotune-{x}")
+@pytest.mark.parametrize("autotune", [False, True], ids=lambda x: f"autotune-{x}")
 def test_simple_chill_backward(
     mask,
     dtype,
@@ -229,7 +229,7 @@ def test_simple_chill_backward(
         in {
             1,
         }
-        and T in {10, 16}
+        and T in {1, 512}
     ):
         pytest.skip("reduced set for autotune")
         return

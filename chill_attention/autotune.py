@@ -200,6 +200,9 @@ def _get_backward_autotune_configs(
 
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
+    capability = _get_cuda_capability()
+    ctas_options = [1, 2, 4] if capability >= (9, 0) else [1]
+
     results = []
     split_loops_options = [True, False] if has_k_full_range else [False]
     split_loops_kv_options = [True, False] if has_q_full_range else [False]
@@ -212,6 +215,7 @@ def _get_backward_autotune_configs(
         warp,
         SPLIT_LOOPS,
         SPLIT_LOOPS_KV,
+        ctas,
     ) in itertools.product(
         additional_q,
         additional_k,
@@ -220,6 +224,7 @@ def _get_backward_autotune_configs(
         warps,
         split_loops_options,
         split_loops_kv_options,
+        ctas_options,
     ):
         results.append(
             triton.Config(
@@ -235,6 +240,7 @@ def _get_backward_autotune_configs(
                 ),
                 num_warps=warp,
                 num_stages=pipe,
+                num_ctas=ctas,
             )
         )
     return results
