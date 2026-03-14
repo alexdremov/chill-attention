@@ -2,7 +2,6 @@ import itertools
 import logging
 import os
 
-import numpy as np
 import torch
 import triton
 
@@ -151,16 +150,20 @@ def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
 
     warps = [N_WARPS] + list(filter(valid_size, warps))
 
+    capability = _get_cuda_capability()
+    ctas_options = [1, 2] if capability >= (9, 0) else [1]
+
     results = []
     split_loops_options = [True, False] if has_k_full_range else [False]
 
-    for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS in itertools.product(
+    for q, k, pipe, TENSORS_PRELOAD, warp, SPLIT_LOOPS, ctas in itertools.product(
         additional_q,
         additional_k,
         additional_pipe,
         [True, False],
         warps,
         split_loops_options,
+        ctas_options,
     ):
         results.append(
             triton.Config(
@@ -173,6 +176,7 @@ def _get_forward_autotune_configs(head_dim, dtype, has_k_full_range: bool):
                 ),
                 num_warps=warp,
                 num_stages=pipe,
+                num_ctas=ctas,
             )
         )
     return results
@@ -184,7 +188,6 @@ def _get_backward_autotune_configs(
     TILE_DQ_Q_SIZE, TILE_DQ_K_SIZE, N_WARPS, PIPELINING, TENSORS_PRELOAD = (
         _get_default_config_bwd(head_dim, dtype=dtype)
     )
-    # Reduced additional sizes
     additional_q = [TILE_DQ_Q_SIZE * 2, TILE_DQ_Q_SIZE // 2, TILE_DQ_Q_SIZE // 4]
     additional_k = [TILE_DQ_K_SIZE * 2, TILE_DQ_K_SIZE // 2, TILE_DQ_K_SIZE // 4]
 
@@ -197,25 +200,17 @@ def _get_backward_autotune_configs(
     additional_pipe = [PIPELINING]
     warps = [N_WARPS // 2]
 
-    def valid_warp_size(x):
+    def valid_size(x):
         return x >= 1 and x <= 8
 
-    warps = [N_WARPS] + list(filter(valid_warp_size, warps))
+    warps = [N_WARPS] + list(filter(valid_size, warps))
 
     capability = _get_cuda_capability()
-    # Reduced CTA options
     ctas_options = [1, 2] if capability >= (9, 0) else [1]
 
     results = []
-    # Link split loops to reduce combinations
-    if has_k_full_range and has_q_full_range:
-        split_options = [(True, True), (False, False)]
-    elif has_k_full_range:
-        split_options = [(True, False), (False, False)]
-    elif has_q_full_range:
-        split_options = [(False, True), (False, False)]
-    else:
-        split_options = [(False, False)]
+    split_loops_options = [True, False] if has_k_full_range else [False]
+    split_loops_kv_options = [True, False] if has_q_full_range else [False]
 
     for (
         q,
@@ -223,7 +218,8 @@ def _get_backward_autotune_configs(
         pipe,
         TENSORS_PRELOAD,
         warp,
-        (SPLIT_LOOPS, SPLIT_LOOPS_KV),
+        SPLIT_LOOPS,
+        SPLIT_LOOPS_KV,
         ctas,
     ) in itertools.product(
         additional_q,
@@ -231,7 +227,8 @@ def _get_backward_autotune_configs(
         additional_pipe,
         [True, False],
         warps,
-        split_options,
+        split_loops_options,
+        split_loops_kv_options,
         ctas_options,
     ):
         results.append(
@@ -274,28 +271,19 @@ def _prune_notfitting_configs(configs, kernel, args, kwargs, grid):
                         {**dict(zip(kernel_run.arg_names, args)), **kwargs_config}
                     )
                 kernel_run = kernel_run.fn
-
-            compiled = kernel_run.warmup(
+            kernel_run.warmup(
                 *args,
                 **kwargs_config,
                 grid=grid,
             )
 
-            if hasattr(compiled, "_init_handles"):
-                compiled._init_handles()
-
-            valid_configs.append((config, compiled.n_spills))
+            valid_configs.append(config)
         except Exception as e:
             if "OutOfResources" in str(e) or "out of resource" in str(e).lower():
                 continue
-            logger.warning(f"Error during pruning config {config}: {e}")
             continue
 
     if not valid_configs:
         return []
 
-    # Quantile-based filtering: keep bottom 50% of spills
-    spills = [s for _, s in valid_configs]
-    threshold = np.quantile(spills, 0.5)
-
-    return [c for c, s in valid_configs if s <= threshold]
+    return valid_configs
